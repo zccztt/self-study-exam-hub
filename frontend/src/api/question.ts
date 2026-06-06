@@ -1,7 +1,22 @@
-/**
- * 题库相关 API
- */
-import apiClient from './client'
+import apiClient, { unwrap } from './client'
+import { sessionStore } from './session'
+
+export interface Question {
+  id: number
+  content: string
+  question_type: string
+  options: string[]
+  difficulty: string
+  year?: number
+  month?: number
+  frequency: number
+  subject_id: number
+  chapter_id?: number
+  score: number
+  source?: string
+  answer?: string
+  explanation?: string
+}
 
 export interface SearchQuestionsParams {
   keyword?: string
@@ -15,25 +30,34 @@ export interface SearchQuestionsParams {
   page_size?: number
 }
 
+export interface QuestionSearchResult {
+  total: number
+  page: number
+  page_size: number
+  items: Question[]
+}
+
+const serializeParams = (params: SearchQuestionsParams) => ({
+  ...params,
+  years: params.years?.join(','),
+  question_types: params.question_types?.join(','),
+  chapter_ids: params.chapter_ids?.join(','),
+})
+
 export const questionApi = {
-  // 搜索题目
   searchQuestions: (params: SearchQuestionsParams) =>
-    apiClient.get('/questions/search', { params }),
-
-  // 获取题目详情
-  getQuestionDetail: (questionId: number) =>
-    apiClient.get(`/questions/${questionId}`),
-
-  // 添加到收藏
-  addToFavorites: (questionId: number, tags?: string[]) =>
-    apiClient.post('/questions/favorites', {
-      question_id: questionId,
-      tags,
-    }),
-
-  // 获取高频题目
+    unwrap<QuestionSearchResult>(apiClient.get('/questions/search', { params: serializeParams(params) })),
+  getQuestionDetail: (questionId: number) => unwrap<Question>(apiClient.get(`/questions/${questionId}`)),
+  addToFavorites: (questionId: number, tags?: string[], userId = sessionStore.getUserId()) =>
+    unwrap<{ success: boolean }>(apiClient.post('/questions/favorites', { user_id: userId, question_id: questionId, tags })),
+  removeFromFavorites: (questionId: number, userId = sessionStore.getUserId()) =>
+    unwrap<{ success: boolean }>(apiClient.delete(`/questions/favorites/${userId}/${questionId}`)),
+  getFavorites: (userId = sessionStore.getUserId(), page = 1, pageSize = 20) =>
+    unwrap<QuestionSearchResult>(
+      apiClient.get(`/questions/favorites/${userId}`, {
+        params: { page, page_size: pageSize },
+      }),
+    ),
   getHighFrequencyQuestions: (subjectId: number, limit = 50) =>
-    apiClient.get('/questions/high-frequency', {
-      params: { subject_id: subjectId, limit },
-    }),
+    unwrap<Question[]>(apiClient.get(`/questions/high-frequency/${subjectId}`, { params: { limit } })),
 }

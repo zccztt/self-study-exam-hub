@@ -1,12 +1,36 @@
 # -*- coding: utf-8 -*-
-"""
-工具函数模块
-"""
+"""Shared utility helpers."""
 
-# TODO: 添加工具函数
-# - 密码加密/验证
-# - JWT token生成/验证
-# - 时间转换
-# - 数据验证
-# - 分页处理
-# 等等
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
+
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+
+from backend.config import settings
+
+
+password_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    return password_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return password_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(data: Dict[str, Any], expires_minutes: Optional[int] = None) -> str:
+    expire = datetime.utcnow() + timedelta(
+        minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+    payload = {**data, "exp": expire}
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
+    try:
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return None

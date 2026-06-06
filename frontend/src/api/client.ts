@@ -1,7 +1,10 @@
-/**
- * API 客户端基础配置
- */
-import axios from 'axios'
+import axios, { AxiosResponse } from 'axios'
+
+export interface ApiEnvelope<T> {
+  code: number
+  data: T
+  message?: string
+}
 
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
@@ -11,35 +14,21 @@ const apiClient = axios.create({
   },
 })
 
-// 请求拦截器
-apiClient.interceptors.request.use(
-  (config) => {
-    // 添加 token
-    const token = localStorage.getItem('token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-  },
-  (error) => {
-    return Promise.reject(error)
+apiClient.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
   }
-)
+  return config
+})
 
-// 响应拦截器
-apiClient.interceptors.response.use(
-  (response) => {
-    return response.data
-  },
-  (error) => {
-    // 处理错误
-    if (error.response?.status === 401) {
-      // 未授权，跳转登录
-      localStorage.removeItem('token')
-      window.location.href = '/login'
-    }
-    return Promise.reject(error)
+export async function unwrap<T>(request: Promise<AxiosResponse<ApiEnvelope<T>>>): Promise<T> {
+  const response = await request
+  const payload = response.data
+  if (payload.code !== 0) {
+    throw new Error(payload.message || 'Request failed')
   }
-)
+  return payload.data
+}
 
 export default apiClient

@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
-"""
-题目模型
-"""
+"""Question model."""
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum as SQLEnum
-from sqlalchemy.sql import func
-from sqlalchemy.dialects.postgresql import ARRAY
 import enum
+
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy.sql import func
+
 from backend.models import Base
 
 
 class QuestionType(str, enum.Enum):
-    """题型枚举"""
     SINGLE_CHOICE = "single_choice"
     MULTIPLE_CHOICE = "multiple_choice"
     FILL_BLANK = "fill_blank"
@@ -21,31 +19,30 @@ class QuestionType(str, enum.Enum):
 
 
 class Difficulty(str, enum.Enum):
-    """难度枚举"""
     EASY = "easy"
     MEDIUM = "medium"
     HARD = "hard"
 
 
 class Question(Base):
-    """题目表"""
     __tablename__ = "questions"
 
-    id = Column(Integer, primary_key=True, index=True, comment="题目ID")
-    subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False, index=True, comment="科目ID")
-    content = Column(Text, nullable=False, comment="题目内容")
-    type = Column(SQLEnum(QuestionType), nullable=False, index=True, comment="题型")
-    options = Column(ARRAY(String), comment="选项（JSON数组）")
-    answer = Column(Text, nullable=False, comment="正确答案")
-    explanation = Column(Text, comment="答案解析")
-    year = Column(Integer, index=True, comment="年份")
-    month = Column(Integer, comment="月份")
-    chapter_id = Column(Integer, ForeignKey("chapters.id"), index=True, comment="章节ID")
-    difficulty = Column(SQLEnum(Difficulty), default=Difficulty.MEDIUM, index=True, comment="难度")
-    frequency = Column(Integer, default=1, comment="出现次数")
-    score = Column(Integer, default=2, comment="分值")
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
+    id = Column(Integer, primary_key=True, index=True)
+    subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    question_type = Column(String(32), nullable=False, index=True)
+    options = Column(JSON)
+    answer = Column(Text, nullable=False)
+    explanation = Column(Text)
+    year = Column(Integer, index=True)
+    month = Column(Integer)
+    chapter_id = Column(Integer, ForeignKey("chapters.id"), index=True)
+    difficulty = Column(String(20), default=Difficulty.MEDIUM.value, index=True)
+    frequency = Column(Integer, default=1, nullable=False)
+    score = Column(Integer, default=2, nullable=False)
+    source = Column(String(200))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    def __repr__(self):
-        return f"<Question {self.id} - {self.type.value}>"
+    def __repr__(self) -> str:
+        return f"<Question {self.id} - {self.question_type}>"

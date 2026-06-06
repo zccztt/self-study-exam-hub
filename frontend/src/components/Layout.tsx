@@ -1,11 +1,46 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { authApi, AuthUser } from '../api/auth'
+import { sessionStore } from '../api/session'
 
 interface LayoutProps {
   children: React.ReactNode
 }
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
+  const [user, setUser] = useState<AuthUser | null>(() => sessionStore.getUser())
+
+  useEffect(() => {
+    const syncUser = () => setUser(sessionStore.getUser())
+    window.addEventListener('storage', syncUser)
+    window.addEventListener('focus', syncUser)
+    window.addEventListener(sessionStore.eventName, syncUser)
+    return () => {
+      window.removeEventListener('storage', syncUser)
+      window.removeEventListener('focus', syncUser)
+      window.removeEventListener(sessionStore.eventName, syncUser)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (user || !sessionStore.getToken()) return
+    const loadUser = async () => {
+      try {
+        const currentUser = await authApi.me()
+        sessionStore.saveUser(currentUser)
+        setUser(currentUser)
+      } catch {
+        sessionStore.clear()
+      }
+    }
+    void loadUser()
+  }, [user])
+
+  const logout = () => {
+    sessionStore.clear()
+    setUser(null)
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -35,6 +70,21 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               <Link to="/planner" className="text-gray-700 hover:text-gray-900">
                 学习规划
               </Link>
+              <Link to="/favorites" className="text-gray-700 hover:text-gray-900">
+                我的收藏
+              </Link>
+              {user ? (
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <span>{user.full_name || user.username}</span>
+                  <button type="button" onClick={logout} className="text-blue-500 hover:text-blue-700">
+                    退出
+                  </button>
+                </div>
+              ) : (
+                <Link to="/auth" className="text-blue-500 hover:text-blue-700">
+                  登录
+                </Link>
+              )}
             </div>
           </div>
         </nav>

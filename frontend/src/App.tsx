@@ -1,26 +1,28 @@
 import React from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
-
-// 页面组件（TODO: 实现具体页面）
-const HomePage = () => <div>首页 - 功能导航</div>
-const ExamPage = () => <div>模拟考试模块</div>
-const QuestionBankPage = () => <div>题库搜索模块</div>
-const VideoPage = () => <div>视频中心模块</div>
-const AnalysisPage = () => <div>考点分析模块</div>
-const PlannerPage = () => <div>学习规划模块</div>
+import Home from './pages/Home'
+import ExamPage from './pages/ExamPage'
+import QuestionsPage from './pages/QuestionsPage'
+import VideosPage from './pages/VideosPage'
+import AnalysisPage from './pages/AnalysisPage'
+import PlannerPage from './pages/PlannerPage'
+import FavoritesPage from './pages/FavoritesPage'
+import AuthPage from './pages/AuthPage'
 
 const App: React.FC = () => {
   return (
     <Router>
       <Layout>
         <Routes>
-          <Route path="/" element={<HomePage />} />
+          <Route path="/" element={<Home />} />
           <Route path="/exam" element={<ExamPage />} />
-          <Route path="/questions" element={<QuestionBankPage />} />
-          <Route path="/videos" element={<VideoPage />} />
+          <Route path="/questions" element={<QuestionsPage />} />
+          <Route path="/videos" element={<VideosPage />} />
           <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/planner" element={<PlannerPage />} />
+          <Route path="/favorites" element={<FavoritesPage />} />
+          <Route path="/auth" element={<AuthPage />} />
         </Routes>
       </Layout>
     </Router>

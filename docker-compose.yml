@@ -62,8 +62,8 @@ services:
   # 后端服务
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: exam-hub-backend
     environment:
       DATABASE_URL: postgresql://exam_user:exam_password@postgres:5432/exam_hub
@@ -78,7 +78,7 @@ services:
       - elasticsearch
       - minio
     volumes:
-      - ./backend:/app
+      - .:/app
     networks:
       - exam-hub-network
 

@@ -1,26 +1,24 @@
 # -*- coding: utf-8 -*-
-"""
-用户模型
-"""
+"""User model."""
 
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlalchemy.sql import func
+
 from backend.models import Base
 
 
 class User(Base):
-    """用户表"""
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True, comment="用户ID")
-    username = Column(String(50), unique=True, nullable=False, index=True, comment="用户名")
-    email = Column(String(100), unique=True, nullable=False, index=True, comment="邮箱")
-    hashed_password = Column(String(255), nullable=False, comment="密码哈希")
-    full_name = Column(String(100), comment="姓名")
-    is_active = Column(Boolean, default=True, comment="是否激活")
-    is_superuser = Column(Boolean, default=False, comment="是否超级用户")
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), comment="更新时间")
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    email = Column(String(120), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(100))
+    is_active = Column(Boolean, default=True, nullable=False)
+    is_superuser = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<User {self.username}>"
