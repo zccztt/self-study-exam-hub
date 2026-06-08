@@ -7,7 +7,8 @@
 ---
 
 ## 演示视频
-[![点击播放视频](封面图链接)](https://github.com/zccztt/self-study-exam-hub/blob/main/%E8%87%AA%E8%80%83%E7%B3%BB%E7%BB%9F%E6%BC%94%E7%A4%BA.mp4)
+
+[![点击播放视频](封面图链接)](https://github.com/user-attachments/assets/ceef0ecb-0b2e-4e90-b234-8133fc330551)
 
 
 ## 🚀 快速开始
