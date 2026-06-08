@@ -7,7 +7,7 @@ const sourceLabels: Record<string, string> = {
   netease: '网易公开课',
   tencent: '腾讯课堂',
   youtube: 'YouTube',
-  custom: '自建资源',
+  custom: '官方/公开资源',
 }
 
 const questionTypeLabels: Record<string, string> = {
@@ -142,9 +142,13 @@ const VideosPage: React.FC = () => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-8">视频中心</h1>
+      <div className="mb-8 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="text-sm font-medium text-blue-600">真实资源链接</div>
+        <h1 className="mt-1 text-3xl font-bold text-slate-950">资源中心</h1>
+        <p className="mt-2 text-sm text-slate-500">内置教育考试官方入口和公开视频检索链接，不再使用占位链接。</p>
+      </div>
 
-      <form onSubmit={handleSearch} className="bg-white rounded-lg shadow p-6 mb-6">
+      <form onSubmit={handleSearch} className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm mb-6">
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <select
             value={subjectId}
@@ -263,7 +267,7 @@ const VideosPage: React.FC = () => {
                   <div className="mt-4 rounded-lg bg-gray-50 p-4">
                     {detail.description && <p className="mb-3 text-sm text-gray-700">{detail.description}</p>}
                     <div className="mb-3 text-sm text-gray-600">
-                      关联真题 {detail.related_questions.length} 道
+                      关联训练题 {detail.related_questions.length} 道
                     </div>
                     <div className="space-y-2">
                       {detail.related_questions.map((question) => (
@@ -285,7 +289,7 @@ const VideosPage: React.FC = () => {
                         </div>
                       ))}
                       {detail.related_questions.length === 0 && (
-                        <div className="text-sm text-gray-500">暂无关联真题</div>
+                        <div className="text-sm text-gray-500">暂无关联训练题</div>
                       )}
                     </div>
                   </div>

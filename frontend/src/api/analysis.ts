@@ -3,8 +3,21 @@ import apiClient, { unwrap } from './client'
 export interface KnowledgePoint {
   id: number
   name: string
+  description?: string
   importance: string
   frequency: number
+  detail?: KnowledgePointDetail
+}
+
+export interface KnowledgePointDetail {
+  overview: string
+  chapter_name?: string
+  importance_label?: string
+  linked_question_count?: number
+  exam_focus: string[]
+  answer_template: string[]
+  common_mistakes: string[]
+  study_advice: string[]
 }
 
 export interface KnowledgeTreeChapter {
@@ -21,6 +34,8 @@ export interface KnowledgeTree {
 
 export interface HighFrequencyPoint extends KnowledgePoint {
   trend: 'up' | 'stable' | string
+  chapter_name?: string
+  question_count?: number
   confidence?: number
   reason?: string
 }

@@ -7,30 +7,45 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
+from backend.data.self_exam_catalog import normalize_course_code
 from backend.elasticsearch_client import ElasticsearchClient
 from backend.models.chapter import KnowledgePoint, QuestionKnowledgePoint
 from backend.models.favorite import QuestionFavorite
 from backend.models.question import Question
+from backend.models.subject import Subject
+from backend.services.online_question_provider import OnlineQuestionProvider, TEMP_ONLINE_SOURCE_PREFIX
 
 
 class QuestionService:
-    def __init__(self, db: Session, es_client: Optional[ElasticsearchClient] = None):
+    def __init__(
+        self,
+        db: Session,
+        es_client: Optional[ElasticsearchClient] = None,
+        online_provider: Optional[OnlineQuestionProvider] = None,
+    ):
         self.db = db
         self.es = es_client
+        self.online_provider = online_provider or OnlineQuestionProvider()
 
     def search_questions(
         self,
         keyword: Optional[str] = None,
         subject_id: Optional[int] = None,
+        subject_code: Optional[str] = None,
+        subject_query: Optional[str] = None,
         years: Optional[List[int]] = None,
         question_types: Optional[List[str]] = None,
         difficulty: Optional[str] = None,
         chapter_ids: Optional[List[int]] = None,
         high_frequency: Optional[bool] = None,
+        online_search: bool = True,
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, Any]:
-        query = self.db.query(Question)
+        query = self.db.query(Question).filter(
+            or_(Question.source.is_(None), ~Question.source.like(f"{TEMP_ONLINE_SOURCE_PREFIX}%"))
+        )
+        selected_subjects = self._resolve_subjects(subject_id, subject_code, subject_query)
 
         if keyword:
             pattern = f"%{keyword.strip()}%"
@@ -43,8 +58,10 @@ class QuestionService:
                 )
             )
 
-        if subject_id:
-            query = query.filter(Question.subject_id == subject_id)
+        if selected_subjects:
+            query = query.filter(Question.subject_id.in_([subject.id for subject in selected_subjects]))
+        elif subject_id or subject_code or subject_query:
+            query = query.filter(Question.id == -1)
 
         if years:
             query = query.filter(Question.year.in_(years))
@@ -68,12 +85,30 @@ class QuestionService:
             .limit(page_size)
             .all()
         )
+        subject_lookup = self._build_subject_lookup(questions)
+        local_items = [
+            self._serialize_question(question, include_answer=False, subject_lookup=subject_lookup)
+            for question in questions
+        ]
+
+        online_items = self._search_online_questions(
+            keyword=keyword,
+            subjects=selected_subjects,
+            subject_code=subject_code,
+            subject_query=subject_query,
+            enabled=online_search,
+            page=page,
+            page_size=page_size,
+        )
 
         return {
-            "total": total,
+            "total": total + len(online_items),
             "page": page,
             "page_size": page_size,
-            "items": [self._serialize_question(question, include_answer=False) for question in questions],
+            "items": local_items + online_items,
+            "local_count": total,
+            "online_count": len(online_items),
+            "online_enabled": online_search,
         }
 
     def get_question_detail(self, question_id: int) -> Optional[Dict[str, Any]]:
@@ -81,7 +116,11 @@ class QuestionService:
         if not question:
             return None
 
-        data = self._serialize_question(question, include_answer=True)
+        data = self._serialize_question(
+            question,
+            include_answer=True,
+            subject_lookup=self._build_subject_lookup([question]),
+        )
         data["knowledge_points"] = self._get_question_points(question.id)
         return data
 
@@ -184,8 +223,77 @@ class QuestionService:
             for point in points
         ]
 
+    def _resolve_subjects(
+        self,
+        subject_id: Optional[int],
+        subject_code: Optional[str],
+        subject_query: Optional[str],
+    ) -> List[Subject]:
+        if subject_id:
+            subject = self.db.query(Subject).filter(Subject.id == subject_id).first()
+            return [subject] if subject else []
+
+        if subject_code:
+            normalized_code = normalize_course_code(subject_code)
+            subject = self.db.query(Subject).filter(Subject.code == normalized_code).first()
+            return [subject] if subject else []
+
+        if subject_query:
+            keyword = subject_query.strip()
+            normalized_code = normalize_course_code(keyword)
+            pattern = f"%{keyword}%"
+            return (
+                self.db.query(Subject)
+                .filter(or_(Subject.code == normalized_code, Subject.name.ilike(pattern)))
+                .order_by(Subject.code.asc(), Subject.id.asc())
+                .limit(20)
+                .all()
+            )
+
+        return []
+
+    def _build_subject_lookup(self, questions: List[Question]) -> Dict[int, Subject]:
+        subject_ids = sorted({question.subject_id for question in questions if question.subject_id})
+        if not subject_ids:
+            return {}
+        subjects = self.db.query(Subject).filter(Subject.id.in_(subject_ids)).all()
+        return {subject.id: subject for subject in subjects}
+
+    def _search_online_questions(
+        self,
+        *,
+        keyword: Optional[str],
+        subjects: List[Subject],
+        subject_code: Optional[str],
+        subject_query: Optional[str],
+        enabled: bool,
+        page: int,
+        page_size: int,
+    ) -> List[Dict[str, Any]]:
+        if not enabled or page != 1:
+            return []
+
+        selected_subject = subjects[0] if subjects else None
+        normalized_code = normalize_course_code(subject_code) if subject_code else None
+        query_text = (keyword or subject_query or "").strip()
+        if not (query_text or selected_subject or normalized_code):
+            return []
+
+        return self.online_provider.search(
+            subject_id=selected_subject.id if selected_subject else None,
+            subject_code=selected_subject.code if selected_subject else normalized_code,
+            subject_name=selected_subject.name if selected_subject else subject_query,
+            keyword=query_text,
+            limit=max(4, min(10, page_size)),
+        )
+
     @staticmethod
-    def _serialize_question(question: Question, include_answer: bool) -> Dict[str, Any]:
+    def _serialize_question(
+        question: Question,
+        include_answer: bool,
+        subject_lookup: Optional[Dict[int, Subject]] = None,
+    ) -> Dict[str, Any]:
+        subject = subject_lookup.get(question.subject_id) if subject_lookup else None
         data: Dict[str, Any] = {
             "id": question.id,
             "content": question.content,
@@ -196,9 +304,12 @@ class QuestionService:
             "month": question.month,
             "frequency": question.frequency,
             "subject_id": question.subject_id,
+            "subject_code": subject.code if subject else None,
+            "subject_name": subject.name if subject else None,
             "chapter_id": question.chapter_id,
             "score": question.score,
             "source": question.source,
+            "is_online": False,
         }
         if include_answer:
             data.update(

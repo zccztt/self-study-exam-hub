@@ -47,8 +47,10 @@ class AnalysisService:
                         {
                             "id": point.id,
                             "name": point.name,
+                            "description": point.description,
                             "importance": point.importance,
                             "frequency": point.frequency,
+                            "detail": self._point_detail(point, chapter.name, 0),
                         }
                         for point in points_by_chapter.get(chapter.id, [])
                     ],
@@ -80,11 +82,13 @@ class AnalysisService:
             {
                 "id": point.id,
                 "name": point.name,
+                "description": point.description,
                 "frequency": max(point.frequency or 0, linked_count or 0),
                 "importance": point.importance,
                 "chapter_name": chapter_name,
                 "question_count": linked_count,
                 "trend": self._trend_label(subject_id, point.id),
+                "detail": self._point_detail(point, chapter_name, linked_count),
             }
             for point, chapter_name, linked_count in rows
         ]
@@ -207,8 +211,40 @@ class AnalysisService:
 
     @staticmethod
     def _prediction_reason(point: Dict[str, Any]) -> str:
-        trend_text = "recent appearances are increasing" if point.get("trend") == "up" else "historical appearances are stable"
+        trend_text = "近年出现频率有上升迹象" if point.get("trend") == "up" else "近年考查保持稳定"
         return (
-            f"{point['frequency']} historical hits, {point.get('question_count') or 0} linked questions, "
-            f"and {trend_text}."
+            f"该考点累计频次 {point['frequency']}，关联训练题 {point.get('question_count') or 0} 道，"
+            f"{trend_text}。建议按“概念-原理-方法论-材料应用”四步复习。"
         )
+
+    @staticmethod
+    def _point_detail(point: KnowledgePoint, chapter_name: str, linked_count: int) -> Dict[str, Any]:
+        importance_label = "高频必背" if point.importance == "high" else "稳定掌握"
+        base_description = point.description or "该考点需要结合教材定义、基本原理和典型材料综合理解。"
+        return {
+            "overview": base_description,
+            "chapter_name": chapter_name,
+            "importance_label": importance_label,
+            "linked_question_count": linked_count,
+            "exam_focus": [
+                "准确写出核心概念和原理表述",
+                "能区分相近概念，避免只背关键词",
+                "能把原理转化为简答题或材料分析题的作答层次",
+            ],
+            "answer_template": [
+                "第一步：点明概念或基本原理",
+                "第二步：展开内在关系、方法论或历史影响",
+                "第三步：结合材料或现实场景说明应用",
+                "第四步：补充易错边界，形成完整结论",
+            ],
+            "common_mistakes": [
+                "只写结论，不解释原理之间的关系",
+                "把教材术语口语化，导致得分点不完整",
+                "材料题脱离题干，未体现具体问题具体分析",
+            ],
+            "study_advice": [
+                "先用 10 分钟整理概念卡片，再做 3 道对应题",
+                "错题按“概念不清、审题偏差、表达缺项”三类标记",
+                "考前一周用简答题模板复述，检查是否能独立成段",
+            ],
+        }

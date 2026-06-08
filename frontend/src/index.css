@@ -3,11 +3,11 @@
 @tailwind utilities;
 
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: Inter, "Microsoft YaHei", "PingFang SC", system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  color: #111827;
-  background-color: #f9fafb;
+  color: #0f172a;
+  background-color: #f4f7fb;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -19,9 +19,39 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(219, 234, 254, 0.45), rgba(244, 247, 251, 0.1) 320px),
+    #f4f7fb;
 }
 
 #root {
   width: 100%;
   min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: #bfdbfe;
+  color: #0f172a;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+  border: 2px solid #f4f7fb;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }

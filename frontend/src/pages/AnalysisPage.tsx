@@ -87,6 +87,7 @@ const AnalysisPage: React.FC = () => {
   const maxChapterFrequency = Math.max(1, ...(chapterHeatmap?.chapters || []).map((chapter) => chapter.frequency))
   const maxWordWeight = Math.max(1, ...wordCloud.map((item) => item.weight))
   const maxTrendCount = Math.max(1, ...(pointTrend?.values || []).map((item) => item.count))
+  const selectedDetail = selectedPoint?.detail
 
   const selectPoint = async (point: HighFrequencyPoint) => {
     setSelectedPoint(point)
@@ -103,9 +104,14 @@ const AnalysisPage: React.FC = () => {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-8">
-        <h1 className="text-3xl font-bold">考点分析</h1>
+    <div className="space-y-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-sm font-medium text-blue-600">2026 高频考点库</div>
+            <h1 className="mt-1 text-3xl font-bold text-slate-950">考点分析</h1>
+            <p className="mt-2 text-sm text-slate-500">按章节、频次、题型和趋势拆解重点，选中考点可查看详细作答说明。</p>
+          </div>
         <select
           value={subjectId}
           onChange={(event) => {
@@ -120,12 +126,28 @@ const AnalysisPage: React.FC = () => {
             </option>
           ))}
         </select>
+        </div>
       </div>
 
       {error && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-red-700">{error}</div>}
       {loading && <div className="mb-4 rounded-lg bg-blue-50 px-4 py-3 text-blue-700">分析数据加载中...</div>}
 
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        {[
+          ['高频考点', highFrequencyPoints.length, '已建立详细说明'],
+          ['章节数', knowledgeTree?.chapters.length || 0, '知识树覆盖'],
+          ['题型数', typeDistribution?.items.length || 0, '客观题与主观题'],
+          ['预测点', prediction.length, '下次考试关注'],
+        ].map(([label, value, desc]) => (
+          <div key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="text-sm text-slate-500">{label}</div>
+            <div className="mt-2 text-3xl font-bold text-slate-950">{value}</div>
+            <div className="mt-1 text-sm text-slate-500">{desc}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-xl font-semibold mb-4">高频考点 Top 20</h2>
         <div className="space-y-3">
           {highFrequencyPoints.map((point, index) => (
@@ -133,8 +155,8 @@ const AnalysisPage: React.FC = () => {
               key={point.id}
               type="button"
               onClick={() => void selectPoint(point)}
-              className={`flex w-full flex-col gap-3 p-4 border rounded-lg text-left lg:flex-row lg:items-center ${
-                selectedPoint?.id === point.id ? 'border-blue-400 bg-blue-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+              className={`flex w-full flex-col gap-3 rounded-lg border p-4 text-left transition lg:flex-row lg:items-center ${
+                selectedPoint?.id === point.id ? 'border-blue-400 bg-blue-50 shadow-sm' : 'border-slate-200 bg-white hover:bg-slate-50'
               }`}
             >
               <div className="flex items-center gap-4 flex-1">
@@ -142,7 +164,8 @@ const AnalysisPage: React.FC = () => {
                 <div className="flex-1">
                   <div className="font-medium">{point.name}</div>
                   <div className="text-sm text-gray-500">
-                    历史频次 {point.frequency}，重要度 {point.importance}
+                    频次 {point.frequency}，重要度 {point.importance}
+                    {point.chapter_name ? `，章节：${point.chapter_name}` : ''}
                   </div>
                 </div>
               </div>
@@ -163,7 +186,41 @@ const AnalysisPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
+      {selectedPoint && (
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+            <div>
+              <div className="text-sm font-medium text-blue-600">当前考点</div>
+              <h2 className="mt-1 text-2xl font-bold text-slate-950">{selectedPoint.name}</h2>
+              <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">
+                {selectedDetail?.overview || selectedPoint.description || '暂无详细说明'}
+              </p>
+            </div>
+            <div className="rounded-lg bg-slate-100 px-4 py-3 text-sm text-slate-700">
+              {selectedDetail?.importance_label || selectedPoint.importance} · 关联题 {selectedPoint.question_count || 0} 道
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+            {[
+              ['命题重点', selectedDetail?.exam_focus || []],
+              ['答题模板', selectedDetail?.answer_template || []],
+              ['常见易错', selectedDetail?.common_mistakes || []],
+              ['学习建议', selectedDetail?.study_advice || []],
+            ].map(([title, items]) => (
+              <div key={title as string} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <h3 className="font-semibold text-slate-950">{title as string}</h3>
+                <ul className="mt-3 space-y-2 text-sm leading-6 text-slate-600">
+                  {(items as string[]).map((item) => (
+                    <li key={item}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <h2 className="text-xl font-semibold">考点年度趋势</h2>
           <div className="text-sm text-gray-500">{selectedPoint?.name || '未选择考点'}</div>
@@ -189,8 +246,8 @@ const AnalysisPage: React.FC = () => {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <div className="bg-white rounded-lg shadow p-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold mb-4">章节出题频次</h2>
           <div className="space-y-3">
             {(chapterHeatmap?.chapters || []).map((chapter) => (
@@ -210,7 +267,7 @@ const AnalysisPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold mb-4">题型分布</h2>
           <div className="space-y-4">
             {(typeDistribution?.items || []).map((item) => (
@@ -233,8 +290,8 @@ const AnalysisPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <div className="bg-white rounded-lg shadow p-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold mb-4">考试大纲树</h2>
           <div className="space-y-4">
             {(knowledgeTree?.chapters || []).map((chapter) => (
@@ -253,7 +310,7 @@ const AnalysisPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow p-6">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold mb-4">考点词云</h2>
           <div className="flex flex-wrap gap-3">
             {wordCloud.map((item) => (
@@ -270,7 +327,7 @@ const AnalysisPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-xl font-semibold mb-4">下次考试预测</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {prediction.map((point) => (

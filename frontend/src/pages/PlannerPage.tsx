@@ -14,7 +14,7 @@ const daysUntil = (value: string) => {
 const PlannerPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [selectedSubjects, setSelectedSubjects] = useState<number[]>([])
-  const [examDate, setExamDate] = useState('')
+  const [examDate, setExamDate] = useState('2026-10-24')
   const [dailyHours, setDailyHours] = useState(2)
   const [currentPlan, setCurrentPlan] = useState<StudyPlan | null>(null)
   const [dailyTasks, setDailyTasks] = useState<DailyTask[]>([])
@@ -155,15 +155,34 @@ const PlannerPage: React.FC = () => {
 
   const progress = currentPlan?.completion_rate || 0
   const planTasks = currentPlan?.plan_data.tasks || []
+  const planPhases = currentPlan?.plan_data.phases || []
+  const weeklyGoals = currentPlan?.plan_data.weekly_goals || []
+  const dailyTemplate = currentPlan?.plan_data.daily_template || []
+  const milestones = currentPlan?.plan_data.milestones || []
+  const riskAlerts = currentPlan?.plan_data.risk_alerts || []
+  const resourceStrategy = currentPlan?.plan_data.resource_strategy || []
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-8">学习规划</h1>
+    <div className="space-y-6">
+      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <div className="text-sm font-medium text-blue-600">系统化备考计划</div>
+            <h1 className="mt-1 text-3xl font-bold text-slate-950">学习规划</h1>
+            <p className="mt-2 text-sm text-slate-500">
+              默认按 2026 年 10 月自考窗口规划，可根据本省公告调整考试日期。
+            </p>
+          </div>
+          <div className="rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-700">
+            建议流程：阶段目标 → 周目标 → 每日任务 → 错题复盘
+          </div>
+        </div>
+      </section>
 
       {error && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-red-700">{error}</div>}
       {message && <div className="mb-4 rounded-lg bg-green-50 px-4 py-3 text-green-700">{message}</div>}
 
-      <form onSubmit={handleGenerate} className="bg-white rounded-lg shadow p-6 mb-6">
+      <form onSubmit={handleGenerate} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-xl font-semibold mb-4">创建学习计划</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
@@ -172,6 +191,7 @@ const PlannerPage: React.FC = () => {
               type="date"
               value={examDate}
               onChange={(event) => setExamDate(event.target.value)}
+              min="2026-06-08"
               className="w-full px-4 py-2 border border-gray-300 rounded-lg"
             />
           </div>
@@ -215,7 +235,7 @@ const PlannerPage: React.FC = () => {
         </button>
       </form>
 
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-4">
           <h2 className="text-xl font-semibold">当前学习计划</h2>
           {currentPlan && (
@@ -282,7 +302,95 @@ const PlannerPage: React.FC = () => {
         )}
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
+      {currentPlan && (
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">阶段计划</h2>
+            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+              {planPhases.map((phase) => (
+                <div key={`${phase.name}-${phase.start_date}`} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-semibold text-slate-950">{phase.name}</h3>
+                    <span className="text-xs text-slate-500">
+                      {formatDate(phase.start_date)} - {formatDate(phase.end_date)}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-slate-600">{phase.goal}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">每日时间块</h2>
+            <div className="mt-4 space-y-3">
+              {dailyTemplate.map((block) => (
+                <div key={block.name} className="rounded-lg border border-slate-200 p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-slate-950">{block.name}</span>
+                    <span className="rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700">{block.minutes} 分钟</span>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-600">{block.content}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm xl:col-span-2">
+            <h2 className="text-xl font-semibold">周目标</h2>
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {weeklyGoals.slice(0, 9).map((goal) => (
+                <div key={goal.week} className="rounded-lg border border-slate-200 bg-white p-4">
+                  <div className="text-sm font-semibold text-blue-600">第 {goal.week} 周 · {formatDate(goal.start_date)}</div>
+                  <div className="mt-2 text-sm text-slate-600">
+                    {subjectNameById.get(goal.subject_id || 0) || '综合复盘'}
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {goal.focus_points.map((point) => (
+                      <span key={`${goal.week}-${point.name}`} className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                        {point.name}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-slate-600">{goal.target}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">关键里程碑</h2>
+            <div className="mt-4 space-y-3">
+              {milestones.map((item) => (
+                <div key={`${item.date}-${item.title}`} className="rounded-lg border border-slate-200 p-4">
+                  <div className="text-sm text-slate-500">{formatDate(item.date)}</div>
+                  <div className="mt-1 font-semibold text-slate-950">{item.title}</div>
+                  <div className="mt-1 text-sm text-slate-600">{item.check}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">风险提示与资源策略</h2>
+            <div className="mt-4 space-y-3">
+              {riskAlerts.map((alert) => (
+                <div key={alert} className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  {alert}
+                </div>
+              ))}
+              {resourceStrategy.map((item) => (
+                <div key={item.type} className="rounded-lg border border-slate-200 px-4 py-3">
+                  <div className="font-medium text-slate-950">{item.type}</div>
+                  <div className="mt-1 text-sm text-slate-600">{item.action}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-xl font-semibold mb-4">今日学习任务</h2>
         <div className="space-y-3">
           {dailyTasks.map((task) => (
@@ -310,6 +418,15 @@ const PlannerPage: React.FC = () => {
                   {task.video_ids.length > 0 ? ` · 视频 ${task.video_ids.length} 个` : ''}
                   {task.actual_hours ? ` · 实际 ${task.actual_hours} 小时` : ''}
                 </div>
+                {task.focus_blocks && task.focus_blocks.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {task.focus_blocks.map((block) => (
+                      <span key={`${task.id}-${block.name}`} className="rounded-full bg-white px-2 py-1 text-xs text-slate-600">
+                        {block.name} {block.minutes}分钟
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               {!task.is_completed && (
                 <div className="flex items-center gap-2">
@@ -339,7 +456,7 @@ const PlannerPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6">
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-xl font-semibold mb-4">薄弱点识别</h2>
         <div className="space-y-3">
           {weakPoints.map((item) => {
@@ -367,6 +484,8 @@ const PlannerPage: React.FC = () => {
                       </span>
                     )}
                   </div>
+                  {item.description && <p className="mb-3 text-sm leading-6 text-slate-600">{item.description}</p>}
+                  {item.reason && <div className="mb-3 rounded bg-slate-50 px-3 py-2 text-sm text-slate-600">{item.reason}</div>}
                   <div className="flex items-center gap-2">
                     <span className="text-sm text-gray-600">掌握度:</span>
                     <div className="flex-1 max-w-xs bg-gray-200 rounded-full h-2">

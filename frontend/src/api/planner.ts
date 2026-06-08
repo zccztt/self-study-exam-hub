@@ -11,19 +11,63 @@ export interface StudyPlan {
   plan_data: {
     days?: number
     allocation?: TimeAllocation
-    tasks?: Array<{
-      date: string
-      subject_id: number
-      chapter_ids: number[]
-      question_count: number
-      video_ids: number[]
-      review_points: Array<{ id: number; name: string }>
-    }>
+    tasks?: PlanTask[]
+    phases?: PlanPhase[]
+    weekly_goals?: WeeklyGoal[]
+    daily_template?: FocusBlock[]
+    milestones?: Milestone[]
+    review_schedule?: ReviewScheduleItem[]
+    resource_strategy?: Array<{ type: string; action: string }>
+    risk_alerts?: string[]
   }
   status: string
   completion_rate: number
   expected_pass_rate?: number
   created_at?: string
+}
+
+export interface FocusBlock {
+  name: string
+  minutes: number
+  content: string
+}
+
+export interface PlanTask {
+  date: string
+  subject_id: number
+  chapter_ids: number[]
+  task_type?: string
+  estimated_hours?: number
+  question_count: number
+  video_ids: number[]
+  review_points: Array<{ id: number; name: string }>
+  focus_blocks?: FocusBlock[]
+}
+
+export interface PlanPhase {
+  name: string
+  start_date: string
+  end_date: string
+  goal: string
+}
+
+export interface WeeklyGoal {
+  week: number
+  start_date: string
+  subject_id?: number
+  focus_points: Array<{ id?: number; name: string }>
+  target: string
+}
+
+export interface Milestone {
+  date: string
+  title: string
+  check: string
+}
+
+export interface ReviewScheduleItem {
+  date: string
+  review_points: Array<Record<string, unknown>>
 }
 
 export interface DailyTask {
@@ -36,6 +80,7 @@ export interface DailyTask {
   question_count: number
   video_ids: number[]
   review_points: Array<{ id: number; name: string }>
+  focus_blocks?: FocusBlock[]
   is_completed: boolean
   actual_hours?: number
 }
@@ -45,9 +90,11 @@ export interface WeakPoint {
   name: string
   chapter_id?: number
   mastery_level: number
+  description?: string
   allocated_hours?: number
   wrong_count?: number
   priority: 'high' | 'medium' | string
+  reason?: string
 }
 
 export interface ProgressResult {

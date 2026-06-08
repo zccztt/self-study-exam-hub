@@ -11,9 +11,13 @@ export interface Question {
   month?: number
   frequency: number
   subject_id: number
+  subject_code?: string
+  subject_name?: string
   chapter_id?: number
   score: number
   source?: string
+  source_url?: string
+  is_online?: boolean
   answer?: string
   explanation?: string
 }
@@ -21,11 +25,14 @@ export interface Question {
 export interface SearchQuestionsParams {
   keyword?: string
   subject_id?: number
+  subject_code?: string
+  subject_query?: string
   years?: number[]
   question_types?: string[]
   difficulty?: string
   chapter_ids?: number[]
   high_frequency?: boolean
+  online_search?: boolean
   page?: number
   page_size?: number
 }
@@ -34,6 +41,9 @@ export interface QuestionSearchResult {
   total: number
   page: number
   page_size: number
+  local_count?: number
+  online_count?: number
+  online_enabled?: boolean
   items: Question[]
 }
 

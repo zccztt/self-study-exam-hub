@@ -2,30 +2,66 @@
 """Exam paper generation, session control, scoring, and wrong-book handling."""
 
 from collections import defaultdict
+import hashlib
 import random
 import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from backend.models.chapter import KnowledgePoint, QuestionKnowledgePoint
+from backend.models.chapter import Chapter, KnowledgePoint, QuestionKnowledgePoint
 from backend.models.exam import Exam, ExamMode, ExamSession, ExamStatus, WrongQuestion
 from backend.models.planner import UserMastery
-from backend.models.question import Question, QuestionType
+from backend.models.question import Difficulty, Question, QuestionType
+from backend.models.subject import Subject
 from backend.redis_client import RedisClient
+from backend.services.online_question_provider import (
+    SAVED_ONLINE_SOURCE_PREFIX,
+    TEMP_ONLINE_SOURCE_PREFIX,
+    OnlineQuestionProvider,
+)
 
 
 class ExamEngine:
-    def __init__(self, db: Session, redis_client: Optional[RedisClient] = None):
+    DEFAULT_QUESTION_LIMIT = 20
+    MAX_QUESTION_LIMIT = 100
+    ONLINE_SOURCE_FETCH_LIMIT = 20
+    ONLINE_QUESTION_ANGLES = [
+        "核心概念解释",
+        "常见选择题考法",
+        "简答题答题框架",
+        "案例分析应用",
+        "易混淆知识点辨析",
+        "复习提纲归纳",
+    ]
+
+    def __init__(
+        self,
+        db: Session,
+        redis_client: Optional[RedisClient] = None,
+        online_provider: Optional[OnlineQuestionProvider] = None,
+    ):
         self.db = db
         self.redis = redis_client
+        self.online_provider = online_provider or OnlineQuestionProvider()
 
     def generate_paper(self, subject_id: int, mode: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        config = config or {}
-        query = self.db.query(Question).filter(Question.subject_id == subject_id)
+        config = dict(config or {})
+        requested_limit = self._normalize_positive_int(
+            config.get("limit", config.get("question_count", self.DEFAULT_QUESTION_LIMIT)),
+            default=self.DEFAULT_QUESTION_LIMIT,
+            maximum=self.MAX_QUESTION_LIMIT,
+        )
+        duration = self._normalize_positive_int(config.get("duration", 120), default=120)
+        config["limit"] = requested_limit
+        config["duration"] = duration
+        query = self.db.query(Question).filter(
+            Question.subject_id == subject_id,
+            or_(Question.source.is_(None), ~Question.source.like(f"{TEMP_ONLINE_SOURCE_PREFIX}%")),
+        )
 
         if mode == ExamMode.REAL_EXAM.value and config.get("year"):
             query = query.filter(Question.year == int(config["year"]))
@@ -44,25 +80,45 @@ class ExamEngine:
                 wrong_query = wrong_query.filter(WrongQuestion.is_mastered.is_(False))
             query = query.filter(Question.id.in_(wrong_query))
 
-        questions = query.order_by(Question.year.desc().nullslast(), Question.id.asc()).all()
-        limit = int(config.get("limit", 20))
-        if len(questions) > limit:
-            questions = random.sample(questions, limit)
+        matched_questions = query.order_by(Question.year.desc().nullslast(), Question.id.asc()).all()
+        available_count = len(matched_questions)
+        actual_limit = min(requested_limit, available_count)
+        questions = (
+            random.sample(matched_questions, actual_limit)
+            if available_count > actual_limit
+            else matched_questions
+        )
+        shortage_message = (
+            f"题库当前仅匹配 {available_count} 道题，已按实际可用数量生成。"
+            if available_count < requested_limit
+            else None
+        )
+        online_generated_count = 0
+        saved_online_question_count = 0
 
         if not questions:
-            return {
-                "exam_id": None,
-                "subject_id": subject_id,
-                "mode": mode,
-                "total_score": 0,
-                "duration": int(config.get("duration", 120)),
-                "question_count": 0,
-                "questions": [],
-                "message": "No questions matched the selected criteria.",
-            }
+            online_result = self._build_online_questions(subject_id, mode, config, requested_limit)
+            questions = online_result["questions"]
+            if not questions:
+                return {
+                    "exam_id": None,
+                    "subject_id": subject_id,
+                    "mode": mode,
+                    "total_score": 0,
+                    "duration": duration,
+                    "requested_question_count": requested_limit,
+                    "available_question_count": available_count,
+                    "online_generated_count": 0,
+                    "saved_online_question_count": 0,
+                    "question_count": 0,
+                    "questions": [],
+                    "message": "没有匹配到本地题目，线上也暂未找到可生成试题的题源，请调整科目或关键词后重试。",
+                }
+            shortage_message = online_result["message"]
+            online_generated_count = len(questions)
+            saved_online_question_count = online_result["saved_count"]
 
         question_ids = [question.id for question in questions]
-        duration = int(config.get("duration", 120))
         exam = Exam(
             subject_id=subject_id,
             name=self._build_exam_name(mode, config),
@@ -85,9 +141,187 @@ class ExamEngine:
             "name": exam.name,
             "total_score": exam.total_score,
             "duration": exam.duration,
+            "requested_question_count": requested_limit,
+            "available_question_count": available_count,
+            "online_generated_count": online_generated_count,
+            "saved_online_question_count": saved_online_question_count,
             "question_count": len(questions),
             "questions": [self._serialize_exam_question(question, include_answer=False) for question in questions],
+            "message": shortage_message,
         }
+
+    def _build_online_questions(
+        self,
+        subject_id: int,
+        mode: str,
+        config: Dict[str, Any],
+        requested_limit: int,
+    ) -> Dict[str, Any]:
+        if mode == ExamMode.WRONG_QUESTIONS.value or not config.get("online_fallback", True):
+            return {"questions": [], "message": None, "saved_count": 0}
+
+        subject = self.db.query(Subject).filter(Subject.id == subject_id).first()
+        if not subject:
+            return {"questions": [], "message": None, "saved_count": 0}
+
+        should_save = bool(config.get("save_online_questions"))
+        keyword = self._build_online_search_keyword(subject, mode, config)
+        online_items = self.online_provider.search(
+            subject_id=subject.id,
+            subject_code=subject.code,
+            subject_name=subject.name,
+            keyword=keyword,
+            limit=min(requested_limit, self.ONLINE_SOURCE_FETCH_LIMIT),
+        )
+        questions: List[Question] = []
+        for online_item in self._expand_online_items(online_items, requested_limit):
+            question = self._create_online_question(
+                subject=subject,
+                online_item=online_item,
+                config=config,
+                should_save=should_save,
+            )
+            if question:
+                questions.append(question)
+            if len(questions) >= requested_limit:
+                break
+
+        if not questions:
+            return {"questions": [], "message": None, "saved_count": 0}
+
+        save_label = "已存入题库，后续组卷将直接复用。" if should_save else "本次作为临时试题使用，未进入题库。"
+        return {
+            "questions": questions,
+            "message": f"本地题库暂无匹配题目，已根据线上题源生成 {len(questions)} 道试题；{save_label}",
+            "saved_count": len(questions) if should_save else 0,
+        }
+
+    def _expand_online_items(self, online_items: List[Dict[str, Any]], requested_limit: int) -> List[Dict[str, Any]]:
+        if not online_items:
+            return []
+
+        expanded: List[Dict[str, Any]] = []
+        for index in range(requested_limit):
+            item = dict(online_items[index % len(online_items)])
+            cycle = index // len(online_items)
+            item["_variant_index"] = cycle + 1
+            item["_variant_angle"] = self.ONLINE_QUESTION_ANGLES[index % len(self.ONLINE_QUESTION_ANGLES)]
+            expanded.append(item)
+        return expanded
+
+    def _create_online_question(
+        self,
+        *,
+        subject: Subject,
+        online_item: Dict[str, Any],
+        config: Dict[str, Any],
+        should_save: bool,
+    ) -> Optional[Question]:
+        source_url = str(online_item.get("source_url") or "").strip()
+        raw_content = str(online_item.get("content") or "").strip()
+        if not source_url or not raw_content:
+            return None
+
+        variant_index = self._normalize_positive_int(online_item.get("_variant_index", 1), default=1)
+        variant_angle = str(online_item.get("_variant_angle") or self.ONLINE_QUESTION_ANGLES[0])
+        fingerprint = hashlib.sha1(
+            f"{subject.code}|{source_url}|{variant_index}|{variant_angle}".encode("utf-8")
+        ).hexdigest()[:12]
+        source_prefix = SAVED_ONLINE_SOURCE_PREFIX if should_save else TEMP_ONLINE_SOURCE_PREFIX
+        existing = (
+            self.db.query(Question)
+            .filter(Question.subject_id == subject.id, Question.content.like(f"%题源编号：{fingerprint}%"))
+            .first()
+        )
+        if existing and (should_save or not (existing.source or "").startswith(SAVED_ONLINE_SOURCE_PREFIX)):
+            if should_save and (existing.source or "").startswith(TEMP_ONLINE_SOURCE_PREFIX):
+                existing.source = f"{SAVED_ONLINE_SOURCE_PREFIX}：{online_item.get('source') or '实时搜索'}"
+                existing.frequency = max(existing.frequency or 0, 1)
+                self.db.flush()
+            return existing
+
+        title, snippet = self._split_online_content(raw_content)
+        chapter_id = self._resolve_generated_chapter_id(config)
+        content = (
+            f"【线上生成】{subject.name}（课程代码 {subject.code}）模拟题\n"
+            f"题源编号：{fingerprint}\n"
+            f"题源标题：{title}\n"
+            f"训练角度：{variant_angle}\n"
+            f"请结合题源信息和课程知识，围绕该训练角度完成作答。"
+        )
+        if snippet:
+            content += f"\n题源摘要：{snippet[:260]}"
+
+        answer = (
+            f"参考作答应围绕“{variant_angle}”展开：先提炼题源涉及的核心概念，再说明定义、适用场景、"
+            "常见命题角度和答题要点，并结合教材或考试大纲进行条理化表达。"
+        )
+        explanation = (
+            f"该题由线上题源生成，用于本地题库缺题时的模拟训练。\n题源链接：{source_url}\n"
+            "正式考试答案应以教材、考试大纲和权威题源解析为准。"
+        )
+
+        question = Question(
+            subject_id=subject.id,
+            chapter_id=chapter_id,
+            content=content,
+            question_type=QuestionType.SHORT_ANSWER.value,
+            options=[],
+            answer=answer,
+            explanation=explanation,
+            year=2026,
+            month=config.get("month"),
+            difficulty=Difficulty.MEDIUM.value,
+            frequency=1 if should_save else 0,
+            score=10,
+            source=f"{source_prefix}：{online_item.get('source') or '实时搜索'}",
+        )
+        self.db.add(question)
+        self.db.flush()
+        return question
+
+    def _build_online_search_keyword(self, subject: Subject, mode: str, config: Dict[str, Any]) -> str:
+        terms = ["模拟题", "真题", "答案解析"]
+        if mode == ExamMode.REAL_EXAM.value and config.get("year"):
+            terms.append(str(config["year"]))
+        if config.get("chapter_ids"):
+            chapters = (
+                self.db.query(KnowledgePoint.name)
+                .join(Chapter, KnowledgePoint.chapter_id == Chapter.id)
+                .filter(Chapter.id.in_(config["chapter_ids"]))
+                .limit(3)
+                .all()
+            )
+            terms.extend(name for (name,) in chapters)
+        return " ".join([subject.name, *terms])
+
+    @staticmethod
+    def _split_online_content(raw_content: str) -> tuple[str, str]:
+        lines = [line.strip() for line in raw_content.splitlines() if line.strip()]
+        if not lines:
+            return "线上题源", ""
+        return lines[0][:120], " ".join(lines[1:])[:400]
+
+    @staticmethod
+    def _resolve_generated_chapter_id(config: Dict[str, Any]) -> Optional[int]:
+        chapter_ids = config.get("chapter_ids")
+        if isinstance(chapter_ids, list) and chapter_ids:
+            try:
+                return int(chapter_ids[0])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _normalize_positive_int(value: Any, default: int, maximum: Optional[int] = None) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        parsed = max(1, parsed)
+        if maximum is not None:
+            parsed = min(maximum, parsed)
+        return parsed
 
     def start_exam(self, exam_id: int, user_id: int) -> Dict[str, Any]:
         exam = self.db.query(Exam).filter(Exam.id == exam_id).first()

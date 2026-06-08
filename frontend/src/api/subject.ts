@@ -21,6 +21,6 @@ export interface SubjectDetail extends Subject {
 }
 
 export const subjectApi = {
-  list: () => unwrap<Subject[]>(apiClient.get('/subjects')),
+  list: (q?: string) => unwrap<Subject[]>(apiClient.get('/subjects', { params: q ? { q } : undefined })),
   detail: (subjectId: number) => unwrap<SubjectDetail>(apiClient.get(`/subjects/${subjectId}`)),
 }

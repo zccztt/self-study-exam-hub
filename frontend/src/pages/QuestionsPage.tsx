@@ -9,6 +9,7 @@ const questionTypeLabels: Record<string, string> = {
   short_answer: '简答题',
   essay: '论述题',
   case: '案例题',
+  online_resource: '线上题源',
 }
 
 const difficultyLabels: Record<string, string> = {
@@ -22,6 +23,7 @@ const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F']
 const QuestionsPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [keyword, setKeyword] = useState('')
+  const [subjectQuery, setSubjectQuery] = useState('')
   const [subjectId, setSubjectId] = useState('')
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [chapterId, setChapterId] = useState('')
@@ -29,6 +31,7 @@ const QuestionsPage: React.FC = () => {
   const [questionType, setQuestionType] = useState('')
   const [difficulty, setDifficulty] = useState('')
   const [highFrequency, setHighFrequency] = useState(false)
+  const [onlineSearch, setOnlineSearch] = useState(true)
   const [result, setResult] = useState<QuestionSearchResult | null>(null)
   const [details, setDetails] = useState<Record<number, Question>>({})
   const [favoriteStatus, setFavoriteStatus] = useState<Record<number, string>>({})
@@ -39,17 +42,24 @@ const QuestionsPage: React.FC = () => {
   const currentPage = result?.page || 1
   const totalPages = Math.max(1, Math.ceil((result?.total || 0) / pageSize))
 
-  const buildParams = (page: number): SearchQuestionsParams => ({
-    keyword: keyword.trim() || undefined,
-    subject_id: subjectId ? Number(subjectId) : undefined,
-    years: year ? [Number(year)] : undefined,
-    question_types: questionType ? [questionType] : undefined,
-    difficulty: difficulty || undefined,
-    chapter_ids: chapterId ? [Number(chapterId)] : undefined,
-    high_frequency: highFrequency || undefined,
-    page,
-    page_size: pageSize,
-  })
+  const buildParams = (page: number): SearchQuestionsParams => {
+    const trimmedSubjectQuery = subjectQuery.trim()
+    const isCourseCode = /^\d{3,5}$/.test(trimmedSubjectQuery)
+    return {
+      keyword: keyword.trim() || undefined,
+      subject_id: subjectId ? Number(subjectId) : undefined,
+      subject_code: !subjectId && isCourseCode ? trimmedSubjectQuery : undefined,
+      subject_query: !subjectId && trimmedSubjectQuery && !isCourseCode ? trimmedSubjectQuery : undefined,
+      years: year ? [Number(year)] : undefined,
+      question_types: questionType ? [questionType] : undefined,
+      difficulty: difficulty || undefined,
+      chapter_ids: chapterId ? [Number(chapterId)] : undefined,
+      high_frequency: highFrequency || undefined,
+      online_search: onlineSearch,
+      page,
+      page_size: pageSize,
+    }
+  }
 
   const loadQuestions = async (page = 1) => {
     setLoading(true)
@@ -153,16 +163,29 @@ const QuestionsPage: React.FC = () => {
           </button>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <input
+            type="text"
+            value={subjectQuery}
+            onChange={(event) => {
+              setSubjectQuery(event.target.value)
+              if (event.target.value.trim()) setSubjectId('')
+            }}
+            placeholder="课程代码或科目名称，如 15043 / 近现代史"
+            className="px-4 py-2 border border-gray-300 rounded-lg"
+          />
           <select
             value={subjectId}
-            onChange={(event) => setSubjectId(event.target.value)}
+            onChange={(event) => {
+              setSubjectId(event.target.value)
+              if (event.target.value) setSubjectQuery('')
+            }}
             className="px-4 py-2 border border-gray-300 rounded-lg"
           >
             <option value="">全部科目</option>
             {subjects.map((subject) => (
               <option key={subject.id} value={subject.id}>
-                {subject.name}
+                {subject.code} {subject.name}
               </option>
             ))}
           </select>
@@ -172,7 +195,7 @@ const QuestionsPage: React.FC = () => {
             className="px-4 py-2 border border-gray-300 rounded-lg"
           >
             <option value="">全部年份</option>
-            {[2024, 2023, 2022, 2021, 2020, 2019].map((item) => (
+            {[2026].map((item) => (
               <option key={item} value={item}>
                 {item}
               </option>
@@ -223,13 +246,23 @@ const QuestionsPage: React.FC = () => {
             />
             <span className="text-sm">只看高频</span>
           </label>
+          <label className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg bg-white">
+            <input
+              type="checkbox"
+              checked={onlineSearch}
+              onChange={(event) => setOnlineSearch(event.target.checked)}
+            />
+            <span className="text-sm">线上实时补充</span>
+          </label>
         </div>
       </form>
 
       {error && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-red-700">{error}</div>}
 
       <div className="mb-4 text-sm text-gray-600">
-        共 {result?.total || 0} 道题，当前第 {currentPage} / {totalPages} 页
+        共 {result?.total || 0} 条结果，当前第 {currentPage} / {totalPages} 页
+        {typeof result?.local_count === 'number' && ` · 本地题库 ${result.local_count} 条`}
+        {typeof result?.online_count === 'number' && ` · 线上补充 ${result.online_count} 条`}
       </div>
 
       <div className="space-y-4">
@@ -254,6 +287,17 @@ const QuestionsPage: React.FC = () => {
                     <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded">
                       频次 {question.frequency}
                     </span>
+                    {(question.subject_code || question.subject_name) && (
+                      <span className="px-2 py-1 bg-indigo-100 text-indigo-700 text-xs rounded">
+                        {question.subject_code ? `${question.subject_code} ` : ''}
+                        {question.subject_name || ''}
+                      </span>
+                    )}
+                    {question.is_online && (
+                      <span className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded">
+                        实时搜索
+                      </span>
+                    )}
                   </div>
                   <p className="text-gray-900 mb-4 whitespace-pre-wrap">{question.content}</p>
                   {question.options.length > 0 && (
@@ -274,22 +318,55 @@ const QuestionsPage: React.FC = () => {
                       )}
                     </div>
                   )}
+                  {question.source && (
+                    <div className="mt-4 text-sm text-gray-500">
+                      来源：{question.source}
+                      {question.source_url && (
+                        <>
+                          {' · '}
+                          <a
+                            href={question.source_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            打开题源
+                          </a>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-row gap-2 lg:ml-4 lg:flex-col">
-                  <button
-                    type="button"
-                    onClick={() => void toggleDetail(question.id)}
-                    className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 text-sm"
-                  >
-                    {detail ? '收起答案' : '查看答案'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void addFavorite(question.id)}
-                    className="px-4 py-2 border border-blue-500 text-blue-500 rounded hover:bg-blue-50 text-sm"
-                  >
-                    {favoriteStatus[question.id] || '收藏'}
-                  </button>
+                  {question.is_online ? (
+                    question.source_url && (
+                      <a
+                        href={question.source_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-4 py-2 border border-blue-500 text-blue-500 rounded hover:bg-blue-50 text-sm"
+                      >
+                        打开链接
+                      </a>
+                    )
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void toggleDetail(question.id)}
+                        className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 text-sm"
+                      >
+                        {detail ? '收起答案' : '查看答案'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void addFavorite(question.id)}
+                        className="px-4 py-2 border border-blue-500 text-blue-500 rounded hover:bg-blue-50 text-sm"
+                      >
+                        {favoriteStatus[question.id] || '收藏'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

@@ -17,9 +17,13 @@ export interface GeneratedPaper {
   name?: string
   total_score: number
   duration: number
+  requested_question_count?: number
+  available_question_count?: number
+  online_generated_count?: number
+  saved_online_question_count?: number
   question_count: number
   questions: Question[]
-  message?: string
+  message?: string | null
 }
 
 export interface ExamSession {
@@ -124,7 +128,7 @@ const serializeWrongQuestionParams = (params: WrongQuestionParams) => ({
 
 export const examApi = {
   generatePaper: (params: GeneratePaperParams) =>
-    unwrap<GeneratedPaper>(apiClient.post('/exam/generate', params)),
+    unwrap<GeneratedPaper>(apiClient.post('/exam/generate', params, { timeout: 120000 })),
   startExam: (examId: number, userId = sessionStore.getUserId()) =>
     unwrap<ExamSession>(apiClient.post('/exam/start', { exam_id: examId, user_id: userId })),
   submitAnswer: (sessionId: string, questionId: number, answer: string) =>

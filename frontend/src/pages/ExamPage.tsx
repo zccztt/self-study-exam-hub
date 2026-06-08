@@ -5,7 +5,7 @@ import { sessionStore } from '../api/session'
 import { Chapter, subjectApi, Subject } from '../api/subject'
 
 const examModeLabels: Record<ExamMode, { title: string; description: string }> = {
-  real_exam: { title: '真题卷', description: '按年份还原完整试卷' },
+  real_exam: { title: '年份卷', description: '按 2026 备考年份筛选题库' },
   random: { title: '随机组卷', description: '按题库条件随机抽题' },
   chapter: { title: '章节练习', description: '针对章节范围练习' },
   wrong_questions: { title: '错题重做', description: '从错题本重新组卷' },
@@ -29,14 +29,21 @@ const formatTime = (seconds: number) => {
   return `${minutes.toString().padStart(2, '0')}:${remainSeconds.toString().padStart(2, '0')}`
 }
 
+const normalizeQuestionLimit = (value: number) => {
+  const parsed = Number.isFinite(value) ? Math.floor(value) : 20
+  return Math.max(1, Math.min(100, parsed))
+}
+
 const ExamPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [selectedSubjectId, setSelectedSubjectId] = useState('')
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [selectedChapterIds, setSelectedChapterIds] = useState<number[]>([])
   const [examMode, setExamMode] = useState<ExamMode>('real_exam')
-  const [year, setYear] = useState('2024')
+  const [year, setYear] = useState('2026')
   const [limit, setLimit] = useState(20)
+  const [onlineFallback, setOnlineFallback] = useState(true)
+  const [saveOnlineQuestions, setSaveOnlineQuestions] = useState(false)
   const [paper, setPaper] = useState<GeneratedPaper | null>(null)
   const [session, setSession] = useState<ExamSession | null>(null)
   const [answers, setAnswers] = useState<Record<number, string>>({})
@@ -120,9 +127,13 @@ const ExamPage: React.FC = () => {
 
     setLoading(true)
     try {
+      const requestedLimit = normalizeQuestionLimit(limit)
+      setLimit(requestedLimit)
       const config: Record<string, unknown> = {
-        limit,
+        limit: requestedLimit,
         duration: selectedSubject?.exam_duration || 120,
+        online_fallback: onlineFallback,
+        save_online_questions: saveOnlineQuestions,
       }
       if (examMode === 'real_exam') config.year = Number(year)
       if (examMode === 'wrong_questions') config.user_id = sessionStore.getUserId()
@@ -141,6 +152,7 @@ const ExamPage: React.FC = () => {
       })
       setPaper(generatedPaper)
       setAnswers({})
+      setMessage(generatedPaper.message || '')
 
       if (!generatedPaper.exam_id) {
         setSession(null)
@@ -345,7 +357,7 @@ const ExamPage: React.FC = () => {
                     onChange={(event) => setYear(event.target.value)}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg"
                   >
-                    {[2024, 2023, 2022, 2021, 2020, 2019].map((item) => (
+                    {[2026].map((item) => (
                       <option key={item} value={item}>
                         {item}
                       </option>
@@ -360,7 +372,7 @@ const ExamPage: React.FC = () => {
                   min={1}
                   max={100}
                   value={limit}
-                  onChange={(event) => setLimit(Number(event.target.value))}
+                  onChange={(event) => setLimit(normalizeQuestionLimit(Number(event.target.value)))}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg"
                 />
               </div>
@@ -382,6 +394,36 @@ const ExamPage: React.FC = () => {
                   ))}
                 </div>
                 {chapters.length === 0 && <div className="text-sm text-gray-500">当前科目暂无章节数据</div>}
+              </div>
+            )}
+
+            {examMode !== 'wrong_questions' && (
+              <div className="mb-6 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={onlineFallback}
+                    onChange={(event) => setOnlineFallback(event.target.checked)}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-800">题库无题时线上生成</span>
+                    <span className="block text-xs text-gray-500">本地没有匹配题时，按课程代码和科目名称搜索题源生成试题。</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={saveOnlineQuestions}
+                    onChange={(event) => setSaveOnlineQuestions(event.target.checked)}
+                    className="mt-1"
+                    disabled={!onlineFallback}
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-800">保存线上生成题到题库</span>
+                    <span className="block text-xs text-gray-500">勾选后生成题会正式入库，后续同科目组卷优先复用本地题。</span>
+                  </span>
+                </label>
               </div>
             )}
 
@@ -424,8 +466,14 @@ const ExamPage: React.FC = () => {
               <div>
                 <h2 className="text-xl font-semibold">{paper.name || examModeLabels[paper.mode].title}</h2>
                 <div className="mt-1 text-sm text-gray-600">
-                  {subjectNameById.get(paper.subject_id) || `科目 ${paper.subject_id}`} · {paper.question_count}题 · 总分{' '}
+                  {subjectNameById.get(paper.subject_id) || `科目 ${paper.subject_id}`} · {paper.question_count}题
+                  {paper.requested_question_count && paper.requested_question_count !== paper.question_count
+                    ? `（请求 ${paper.requested_question_count}，题库匹配 ${paper.available_question_count ?? paper.question_count}）`
+                    : ''}{' '}
+                  · 总分{' '}
                   {paper.total_score}
+                  {paper.online_generated_count ? ` · 线上生成 ${paper.online_generated_count}题` : ''}
+                  {paper.saved_online_question_count ? ` · 已入库 ${paper.saved_online_question_count}题` : ''}
                 </div>
               </div>
               <div className="text-sm text-gray-600">

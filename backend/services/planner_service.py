@@ -52,6 +52,14 @@ class PlannerService:
             [point for points in weak_points_by_subject.values() for point in points],
             [point for points in high_freq_by_subject.values() for point in points],
         )
+        plan_system = self._build_system_plan(
+            start=today,
+            days=days,
+            subjects=subjects,
+            daily_hours=daily_hours,
+            weak_points_by_subject=weak_points_by_subject,
+            high_freq_by_subject=high_freq_by_subject,
+        )
         expected_pass_rate = self._estimate_pass_rate(days, daily_hours, weak_points_by_subject)
 
         self.db.query(StudyPlan).filter(
@@ -65,7 +73,12 @@ class PlannerService:
             daily_hours=daily_hours,
             subjects=subjects,
             preferences=preferences,
-            plan_data={"tasks": tasks, "days": days, "allocation": allocation},
+            plan_data={
+                "tasks": tasks,
+                "days": days,
+                "allocation": allocation,
+                **plan_system,
+            },
             expected_pass_rate=round(expected_pass_rate, 2),
         )
         self.db.add(plan)
@@ -102,12 +115,16 @@ class PlannerService:
                 {
                     "point_id": point.id,
                     "name": point.name,
+                    "description": point.description,
                     "chapter_id": point.chapter_id,
                     "mastery_level": mastery.mastery_level,
                     "correct_count": mastery.correct_count,
                     "wrong_count": mastery.wrong_count,
                     "next_review_time": mastery.next_review_time.isoformat() if mastery.next_review_time else None,
                     "priority": "high" if mastery.mastery_level < 0.6 else "medium",
+                    "reason": "掌握度低于 60%，优先安排概念重建和错题复盘"
+                    if mastery.mastery_level < 0.6
+                    else "掌握度未达稳定水平，安排间隔复习",
                 }
                 for mastery, point in mastery_rows
                 if mastery.mastery_level < 0.8
@@ -134,10 +151,12 @@ class PlannerService:
                 {
                     "point_id": point.id,
                     "name": point.name,
+                    "description": point.description,
                     "chapter_id": point.chapter_id,
                     "mastery_level": max(0.2, round(1 - min(wrong_total, 5) / 6, 2)),
                     "wrong_count": wrong_total,
                     "priority": "high" if wrong_total >= 2 or point.frequency >= 6 else "medium",
+                    "reason": f"错题累计 {wrong_total} 次，建议先复盘概念再做同类题",
                 }
                 for point, wrong_total in wrong_rows
             ]
@@ -154,9 +173,11 @@ class PlannerService:
             {
                 "point_id": point.id,
                 "name": point.name,
+                "description": point.description,
                 "chapter_id": point.chapter_id,
                 "mastery_level": 0.65,
                 "priority": "high" if point.frequency >= 6 else "medium",
+                "reason": "暂无个人做题记录，按高频考点先行纳入计划",
             }
             for point in points
         ]
@@ -300,12 +321,137 @@ class PlannerService:
                     "date": (start + timedelta(days=offset)).isoformat(),
                     "subject_id": subject_id,
                     "chapter_ids": chapter_ids,
+                    "task_type": self._task_type(offset),
+                    "estimated_hours": daily_hours,
                     "question_count": max(10, int(daily_hours * 12)),
                     "video_ids": self._recommend_video_ids(subject_id, chapter_ids),
                     "review_points": review_points,
+                    "focus_blocks": self._build_focus_blocks(daily_hours, review_points),
                 }
             )
         return tasks
+
+    def _build_system_plan(
+        self,
+        start: datetime,
+        days: int,
+        subjects: List[int],
+        daily_hours: float,
+        weak_points_by_subject: Dict[int, List[Dict[str, Any]]],
+        high_freq_by_subject: Dict[int, List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        all_weak_points = [point for points in weak_points_by_subject.values() for point in points]
+        all_high_freq = [point for points in high_freq_by_subject.values() for point in points]
+        return {
+            "phases": self._build_phases(start, days),
+            "weekly_goals": self._build_weekly_goals(start, days, subjects, weak_points_by_subject, high_freq_by_subject),
+            "daily_template": self._build_focus_blocks(daily_hours, all_weak_points[:2] or all_high_freq[:2]),
+            "milestones": self._build_milestones(start, days),
+            "review_schedule": self.schedule_reviews(start, all_high_freq[:8]),
+            "resource_strategy": self._build_resource_strategy(),
+            "risk_alerts": self._build_risk_alerts(days, daily_hours, all_weak_points),
+        }
+
+    @staticmethod
+    def _build_phases(start: datetime, days: int) -> List[Dict[str, Any]]:
+        phase_defs = [
+            ("基础梳理", 0.0, 0.35, "通读教材和考试大纲，建立章节框架，完成高频概念卡片。"),
+            ("强化训练", 0.35, 0.68, "按章节刷题，针对薄弱点进行同类题训练，形成错题归因。"),
+            ("套卷模拟", 0.68, 0.88, "每周至少完成 1 套限时卷，复盘失分点和答题时间分配。"),
+            ("冲刺回顾", 0.88, 1.0, "压缩记忆清单，重做错题和高频简答题，保持考试节奏。"),
+        ]
+        phases = []
+        for name, start_ratio, end_ratio, goal in phase_defs:
+            start_offset = min(days - 1, max(0, int(days * start_ratio)))
+            end_offset = min(days - 1, max(start_offset, int(days * end_ratio) - 1))
+            phases.append(
+                {
+                    "name": name,
+                    "start_date": (start + timedelta(days=start_offset)).date().isoformat(),
+                    "end_date": (start + timedelta(days=end_offset)).date().isoformat(),
+                    "goal": goal,
+                }
+            )
+        return phases
+
+    @staticmethod
+    def _build_weekly_goals(
+        start: datetime,
+        days: int,
+        subjects: List[int],
+        weak_points_by_subject: Dict[int, List[Dict[str, Any]]],
+        high_freq_by_subject: Dict[int, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        weeks = min(12, max(1, (days + 6) // 7))
+        goals = []
+        for week in range(weeks):
+            subject_id = subjects[week % len(subjects)] if subjects else None
+            weak_points = weak_points_by_subject.get(subject_id, []) if subject_id else []
+            high_freq = high_freq_by_subject.get(subject_id, []) if subject_id else []
+            focus_points = weak_points[:2] or high_freq[:2]
+            goals.append(
+                {
+                    "week": week + 1,
+                    "start_date": (start + timedelta(days=week * 7)).date().isoformat(),
+                    "subject_id": subject_id,
+                    "focus_points": [
+                        {"id": point.get("point_id") or point.get("id"), "name": point["name"]}
+                        for point in focus_points
+                    ],
+                    "target": "完成章节框架复盘、30-60 道对应训练题、1 次错题归因。",
+                }
+            )
+        return goals
+
+    @staticmethod
+    def _build_milestones(start: datetime, days: int) -> List[Dict[str, Any]]:
+        checkpoints = [
+            (0.25, "完成教材第一轮框架梳理"),
+            (0.5, "完成高频考点第一轮刷题"),
+            (0.75, "完成至少 2 次限时模拟并复盘"),
+            (0.95, "完成错题本和简答题模板冲刺"),
+        ]
+        return [
+            {
+                "date": (start + timedelta(days=min(days - 1, max(0, int(days * ratio))))).date().isoformat(),
+                "title": title,
+                "check": "检查完成率、错题数量和主观题表达完整度",
+            }
+            for ratio, title in checkpoints
+        ]
+
+    @staticmethod
+    def _build_focus_blocks(daily_hours: float, review_points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        core_minutes = int(max(20, daily_hours * 60 * 0.45))
+        practice_minutes = int(max(20, daily_hours * 60 * 0.35))
+        review_minutes = max(15, int(daily_hours * 60) - core_minutes - practice_minutes)
+        focus_names = "、".join(point.get("name", "") for point in review_points[:2] if point.get("name")) or "当日章节重点"
+        return [
+            {"name": "概念精读", "minutes": core_minutes, "content": f"精读并复述：{focus_names}"},
+            {"name": "题目训练", "minutes": practice_minutes, "content": "完成客观题训练并记录错因"},
+            {"name": "错题复盘", "minutes": review_minutes, "content": "按概念不清、审题偏差、表达缺项三类整理"},
+        ]
+
+    @staticmethod
+    def _build_resource_strategy() -> List[Dict[str, str]]:
+        return [
+            {"type": "官方信息", "action": "考试时间、报名和政策以教育部教育考试院及各省教育考试院公告为准。"},
+            {"type": "教材框架", "action": "先按章节目录建立知识树，再把高频考点挂到对应章节。"},
+            {"type": "视频资源", "action": "只用于理解难点，观看后必须回到题目训练验证掌握度。"},
+            {"type": "错题本", "action": "错题必须写清错因、关联考点和下次复习日期。"},
+        ]
+
+    @staticmethod
+    def _build_risk_alerts(days: int, daily_hours: float, weak_points: List[Dict[str, Any]]) -> List[str]:
+        alerts = []
+        if days < 30:
+            alerts.append("备考周期少于 30 天，应压缩教材通读时间，优先处理高频考点和错题。")
+        if daily_hours < 2:
+            alerts.append("每日学习时长低于 2 小时，建议周末补一次 2 小时套卷训练。")
+        high_priority_count = len([point for point in weak_points if point.get("priority") == "high"])
+        if high_priority_count >= 3:
+            alerts.append(f"高优先级薄弱点 {high_priority_count} 个，前两周应优先安排概念重建。")
+        return alerts or ["当前时间配置较均衡，按周目标推进并保持错题复盘即可。"]
 
     def _recommend_video_ids(self, subject_id: int, chapter_ids: List[int], limit: int = 2) -> List[int]:
         query = self.db.query(Video.id).filter(Video.subject_id == subject_id, Video.is_active == 1)
@@ -323,6 +469,17 @@ class PlannerService:
         if not candidates:
             return None
         return candidates[offset % len(candidates)]
+
+    @staticmethod
+    def _task_type(offset: int) -> str:
+        cycle = offset % 7
+        if cycle in {0, 1, 2}:
+            return "基础巩固"
+        if cycle in {3, 4}:
+            return "强化刷题"
+        if cycle == 5:
+            return "错题复盘"
+        return "周测总结"
 
     @staticmethod
     def _build_review_points(target_point: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -384,6 +541,10 @@ class PlannerService:
             "question_count": task.question_count,
             "video_ids": task.video_ids or [],
             "review_points": task.review_points or [],
+            "focus_blocks": PlannerService._build_focus_blocks(
+                task.actual_hours or 2,
+                task.review_points or [],
+            ),
             "is_completed": task.is_completed,
             "actual_hours": task.actual_hours,
         }
