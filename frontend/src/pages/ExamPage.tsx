@@ -5,7 +5,7 @@ import { sessionStore } from '../api/session'
 import { Chapter, subjectApi, Subject } from '../api/subject'
 
 const examModeLabels: Record<ExamMode, { title: string; description: string }> = {
-  real_exam: { title: '年份卷', description: '按 2026 备考年份筛选题库' },
+  real_exam: { title: '年份卷', description: '按当前或历年备考年份筛选题库' },
   random: { title: '随机组卷', description: '按题库条件随机抽题' },
   chapter: { title: '章节练习', description: '针对章节范围练习' },
   wrong_questions: { title: '错题重做', description: '从错题本重新组卷' },
@@ -21,6 +21,8 @@ const questionTypeLabels: Record<string, string> = {
 }
 
 const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F']
+const CURRENT_EXAM_YEAR = new Date().getFullYear()
+const YEAR_OPTIONS = Array.from({ length: 12 }, (_, index) => CURRENT_EXAM_YEAR - index)
 
 const formatTime = (seconds: number) => {
   const safeSeconds = Math.max(0, seconds)
@@ -40,7 +42,7 @@ const ExamPage: React.FC = () => {
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [selectedChapterIds, setSelectedChapterIds] = useState<number[]>([])
   const [examMode, setExamMode] = useState<ExamMode>('real_exam')
-  const [year, setYear] = useState('2026')
+  const [year, setYear] = useState(String(CURRENT_EXAM_YEAR))
   const [limit, setLimit] = useState(20)
   const [onlineFallback, setOnlineFallback] = useState(true)
   const [saveOnlineQuestions, setSaveOnlineQuestions] = useState(false)
@@ -135,7 +137,7 @@ const ExamPage: React.FC = () => {
         online_fallback: onlineFallback,
         save_online_questions: saveOnlineQuestions,
       }
-      if (examMode === 'real_exam') config.year = Number(year)
+      if (examMode !== 'wrong_questions') config.year = Number(year)
       if (examMode === 'wrong_questions') config.user_id = sessionStore.getUserId()
       if (examMode === 'chapter') {
         if (selectedChapterIds.length === 0) {
@@ -349,7 +351,7 @@ const ExamPage: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-              {examMode === 'real_exam' && (
+              {examMode !== 'wrong_questions' && (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">选择年份</label>
                   <select
@@ -357,7 +359,7 @@ const ExamPage: React.FC = () => {
                     onChange={(event) => setYear(event.target.value)}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg"
                   >
-                    {[2026].map((item) => (
+                    {YEAR_OPTIONS.map((item) => (
                       <option key={item} value={item}>
                         {item}
                       </option>
@@ -380,16 +382,58 @@ const ExamPage: React.FC = () => {
 
             {examMode === 'chapter' && (
               <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">练习章节</label>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">练习章节</label>
+                    <div className="mt-1 text-xs text-gray-500">
+                      当前科目共 {chapters.length} 个章节，已选 {selectedChapterIds.length} 个
+                    </div>
+                  </div>
+                  {chapters.length > 0 && (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedChapterIds(chapters.map((chapter) => chapter.id))}
+                        className="rounded border border-blue-200 px-3 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                      >
+                        全选
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedChapterIds([])}
+                        className="rounded border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                      >
+                        清空
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {chapters.map((chapter) => (
-                    <label key={chapter.id} className="flex items-center gap-2 rounded border border-gray-200 px-3 py-2">
+                    <label
+                      key={chapter.id}
+                      className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-3 transition ${
+                        selectedChapterIds.includes(chapter.id)
+                          ? 'border-blue-300 bg-blue-50'
+                          : 'border-gray-200 bg-white hover:border-gray-300'
+                      }`}
+                    >
                       <input
                         type="checkbox"
                         checked={selectedChapterIds.includes(chapter.id)}
                         onChange={() => toggleChapter(chapter.id)}
+                        className="mt-1"
                       />
-                      <span className="text-sm">{chapter.name}</span>
+                      <span>
+                        <span className="block text-sm font-medium text-slate-900">
+                          {chapter.order}. {chapter.name}
+                        </span>
+                        {chapter.description && (
+                          <span className="mt-1 line-clamp-2 block text-xs leading-5 text-slate-500">
+                            {chapter.description}
+                          </span>
+                        )}
+                      </span>
                     </label>
                   ))}
                 </div>
@@ -516,9 +560,9 @@ const ExamPage: React.FC = () => {
               <div>
                 <h2 className="text-2xl font-bold">考试结果</h2>
                 <div className="mt-2 text-gray-600">
-                  客观题正确 {scoreResult.correct_count} / {scoreResult.objective_count || scoreResult.total_count}，
-                  正确率 {Math.round(scoreResult.accuracy * 100)}%
-                  {scoreResult.manual_count > 0 ? `，${scoreResult.manual_count} 道主观题待人工评分` : ''}
+                  已自动评分 {scoreResult.auto_scored_count || scoreResult.total_count} / {scoreResult.total_count} 题，
+                  客观题 {scoreResult.objective_count} 题，主观题 {scoreResult.subjective_count || 0} 题，
+                  得分率 {Math.round(scoreResult.accuracy * 100)}%
                 </div>
               </div>
               <div className="text-4xl font-bold text-blue-500">
@@ -536,17 +580,66 @@ const ExamPage: React.FC = () => {
 
           {scoreResult.question_analysis.map((item, index) => (
             <div key={item.question_id} className="bg-white rounded-lg shadow p-6">
-              <div className="mb-2 flex items-center gap-2">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
                 <span className="font-semibold">第 {index + 1} 题</span>
+                <span className="rounded bg-blue-100 px-2 py-1 text-sm text-blue-700">
+                  {questionTypeLabels[item.question_type || ''] || item.question_type || '题目'}
+                </span>
+                <span className="rounded bg-slate-100 px-2 py-1 text-sm text-slate-700">
+                  {item.score} / {item.full_score} 分
+                </span>
                 {item.is_correct === true && <span className="rounded bg-green-100 px-2 py-1 text-sm text-green-700">正确</span>}
-                {item.is_correct === false && <span className="rounded bg-red-100 px-2 py-1 text-sm text-red-700">错误</span>}
-                {item.is_correct === null && <span className="rounded bg-gray-100 px-2 py-1 text-sm text-gray-700">待人工评分</span>}
+                {item.is_correct === false && <span className="rounded bg-red-100 px-2 py-1 text-sm text-red-700">需复习</span>}
               </div>
               <div className="whitespace-pre-wrap text-gray-900">{item.content}</div>
+              {item.options && item.options.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {item.options.map((option, optionIndex) => {
+                    const letter = optionLetters[optionIndex]
+                    const isCorrect = item.correct_answer.includes(letter)
+                    const isUserSelected = item.user_answer.includes(letter)
+                    return (
+                      <div
+                        key={`${item.question_id}-analysis-${letter}`}
+                        className={`rounded border px-3 py-2 text-sm ${
+                          isCorrect
+                            ? 'border-green-200 bg-green-50 text-green-800'
+                            : isUserSelected
+                              ? 'border-red-200 bg-red-50 text-red-800'
+                              : 'border-gray-200 bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        {letter}. {option}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
               <div className="mt-4 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
                 <div className="rounded bg-gray-50 p-3">你的答案：{item.user_answer || '-'}</div>
                 <div className="rounded bg-gray-50 p-3">参考答案：{item.correct_answer || '-'}</div>
               </div>
+              {item.scoring_points && item.scoring_points.length > 0 && (
+                <div className="mt-3 rounded bg-amber-50 p-3 text-sm text-amber-900">
+                  <div className="mb-2 font-medium">标准评分项</div>
+                  <div className="space-y-2">
+                    {item.scoring_points.map((point, pointIndex) => (
+                      <div key={`${item.question_id}-point-${pointIndex}`}>
+                        <div>
+                          {pointIndex + 1}. {point.label}：{point.earned_score} / {point.score} 分
+                        </div>
+                        {point.comment && <div className="text-amber-800">{point.comment}</div>}
+                        {point.matched_keywords && point.matched_keywords.length > 0 && (
+                          <div className="text-amber-700">命中：{point.matched_keywords.join('、')}</div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {item.final_explanation && (
+                <div className="mt-3 rounded bg-green-50 p-3 text-sm text-green-800">{item.final_explanation}</div>
+              )}
               {item.explanation && <div className="mt-3 rounded bg-blue-50 p-3 text-sm text-blue-800">{item.explanation}</div>}
             </div>
           ))}

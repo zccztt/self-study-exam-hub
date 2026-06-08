@@ -2,6 +2,7 @@
 """Question bank service."""
 
 from datetime import datetime
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import and_, or_
@@ -17,6 +18,8 @@ from backend.services.online_question_provider import OnlineQuestionProvider, TE
 
 
 class QuestionService:
+    SCORING_RUBRIC_PATTERN = re.compile(r"\[\[SCORING_RUBRIC\]\](.*?)\[\[/SCORING_RUBRIC\]\]", re.S)
+
     def __init__(
         self,
         db: Session,
@@ -96,6 +99,7 @@ class QuestionService:
             subjects=selected_subjects,
             subject_code=subject_code,
             subject_query=subject_query,
+            years=years,
             enabled=online_search,
             page=page,
             page_size=page_size,
@@ -266,6 +270,7 @@ class QuestionService:
         subjects: List[Subject],
         subject_code: Optional[str],
         subject_query: Optional[str],
+        years: Optional[List[int]],
         enabled: bool,
         page: int,
         page_size: int,
@@ -284,6 +289,7 @@ class QuestionService:
             subject_code=selected_subject.code if selected_subject else normalized_code,
             subject_name=selected_subject.name if selected_subject else subject_query,
             keyword=query_text,
+            year=years[0] if years else None,
             limit=max(4, min(10, page_size)),
         )
 
@@ -315,8 +321,14 @@ class QuestionService:
             data.update(
                 {
                     "answer": question.answer,
-                    "explanation": question.explanation,
+                    "explanation": QuestionService._strip_scoring_rubric(question.explanation),
                     "created_at": question.created_at.isoformat() if question.created_at else None,
                 }
             )
         return data
+
+    @classmethod
+    def _strip_scoring_rubric(cls, explanation: Optional[str]) -> str:
+        if not explanation:
+            return ""
+        return cls.SCORING_RUBRIC_PATTERN.sub("", explanation).strip()

@@ -7,7 +7,7 @@ const sourceLabels: Record<string, string> = {
   netease: '网易公开课',
   tencent: '腾讯课堂',
   youtube: 'YouTube',
-  custom: '官方/公开资源',
+  custom: '公开视频',
 }
 
 const questionTypeLabels: Record<string, string> = {
@@ -145,7 +145,7 @@ const VideosPage: React.FC = () => {
       <div className="mb-8 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="text-sm font-medium text-blue-600">真实资源链接</div>
         <h1 className="mt-1 text-3xl font-bold text-slate-950">资源中心</h1>
-        <p className="mt-2 text-sm text-slate-500">内置教育考试官方入口和公开视频检索链接，不再使用占位链接。</p>
+        <p className="mt-2 text-sm text-slate-500">优先展示本地真实视频；本地无匹配时线上实时搜索公开视频并保存链接。</p>
       </div>
 
       <form onSubmit={handleSearch} className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm mb-6">
@@ -208,7 +208,9 @@ const VideosPage: React.FC = () => {
 
       <div className="mb-4 text-sm text-gray-600">
         共 {result?.total || 0} 个视频，当前第 {currentPage} / {totalPages} 页
+        {result?.online_saved_count ? ` · 线上补充并保存 ${result.online_saved_count} 个` : ''}
       </div>
+      {result?.message && <div className="mb-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-700">{result.message}</div>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {(result?.items || []).map((video) => {

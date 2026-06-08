@@ -63,18 +63,32 @@ export interface ScoreResult {
   correct_count: number
   total_count: number
   objective_count: number
+  subjective_count?: number
+  auto_scored_count?: number
   manual_count: number
   accuracy: number
   wrong_questions: number[]
   question_analysis: Array<{
     question_id: number
     content: string
+    question_type?: string
+    options?: string[]
     user_answer: string
     correct_answer: string
     is_correct: boolean | null
-    score: number | null
+    score: number
     full_score: number
     explanation?: string
+    final_explanation?: string
+    grading_method?: string
+    scoring_points?: Array<{
+      label: string
+      score: number
+      earned_score: number
+      matched_keywords?: string[]
+      missing_keywords?: string[]
+      comment?: string
+    }>
   }>
 }
 

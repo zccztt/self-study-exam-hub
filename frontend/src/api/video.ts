@@ -32,6 +32,9 @@ export interface VideoSearchResult {
   total: number
   page: number
   page_size: number
+  online_saved_count?: number
+  online_searched?: boolean
+  message?: string | null
   items: VideoItem[]
 }
 

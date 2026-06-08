@@ -19,6 +19,8 @@ const difficultyLabels: Record<string, string> = {
 }
 
 const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F']
+const CURRENT_EXAM_YEAR = new Date().getFullYear()
+const YEAR_OPTIONS = Array.from({ length: 12 }, (_, index) => CURRENT_EXAM_YEAR - index)
 
 const QuestionsPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([])
@@ -27,7 +29,7 @@ const QuestionsPage: React.FC = () => {
   const [subjectId, setSubjectId] = useState('')
   const [chapters, setChapters] = useState<Chapter[]>([])
   const [chapterId, setChapterId] = useState('')
-  const [year, setYear] = useState('')
+  const [year, setYear] = useState(String(CURRENT_EXAM_YEAR))
   const [questionType, setQuestionType] = useState('')
   const [difficulty, setDifficulty] = useState('')
   const [highFrequency, setHighFrequency] = useState(false)
@@ -79,7 +81,7 @@ const QuestionsPage: React.FC = () => {
       try {
         const [subjectData, questionData] = await Promise.all([
           subjectApi.list(),
-          questionApi.searchQuestions({ page: 1, page_size: pageSize }),
+          questionApi.searchQuestions({ years: [CURRENT_EXAM_YEAR], page: 1, page_size: pageSize }),
         ])
         setSubjects(subjectData)
         setResult(questionData)
@@ -195,7 +197,7 @@ const QuestionsPage: React.FC = () => {
             className="px-4 py-2 border border-gray-300 rounded-lg"
           >
             <option value="">全部年份</option>
-            {[2026].map((item) => (
+            {YEAR_OPTIONS.map((item) => (
               <option key={item} value={item}>
                 {item}
               </option>

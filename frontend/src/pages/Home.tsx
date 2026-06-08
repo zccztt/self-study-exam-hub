@@ -33,8 +33,8 @@ const modules = [
   {
     to: '/videos',
     title: '资源中心',
-    meta: '官方入口 · B站真实检索',
-    description: '聚合教育考试官方入口和公开视频检索链接，视频详情可关联题目与章节。',
+    meta: '真实视频 · 线上补充',
+    description: '优先展示本地真实视频；没有匹配资源时线上搜索公开视频页并保存链接，视频详情可关联题目与章节。',
     tone: 'bg-rose-50 text-rose-700 border-rose-100',
   },
   {
@@ -49,8 +49,8 @@ const modules = [
 const officialLinks = [
   { label: '教育部教育考试院', href: 'https://www.neea.edu.cn/' },
   { label: '高等教育自学考试入口', href: 'https://zikao.neea.edu.cn/' },
-  { label: 'B站：自考马原资源检索', href: 'https://search.bilibili.com/all?keyword=%E8%87%AA%E8%80%83%20%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E5%9F%BA%E6%9C%AC%E5%8E%9F%E7%90%86' },
-  { label: 'B站：中国近现代史纲要资源检索', href: 'https://search.bilibili.com/all?keyword=%E8%87%AA%E8%80%83%20%E4%B8%AD%E5%9B%BD%E8%BF%91%E7%8E%B0%E4%BB%A3%E5%8F%B2%E7%BA%B2%E8%A6%81' },
+  { label: 'B站：马克思主义基本原理公开视频', href: 'https://www.bilibili.com/video/BV1hW41167NW' },
+  { label: 'B站：中国近现代史纲要公开视频', href: 'https://www.bilibili.com/video/BV1t4411e7Q5' },
 ]
 
 const Home: React.FC = () => {
@@ -66,7 +66,7 @@ const Home: React.FC = () => {
               从考试安排、考点分析到每日任务，形成完整备考闭环。
             </h1>
             <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
-              当前演示库已内置 2026 公共课课程、公开官方入口、B站真实资源检索、高频考点详情和系统学习计划。
+              当前演示库已内置 2026 公共课课程、公开官方入口、B站真实视频资源、高频考点详情和系统学习计划。
               登录后可直接体验组卷、提交、错题归档和计划进度更新。
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
@@ -108,7 +108,7 @@ const Home: React.FC = () => {
           ['考试窗口', '2026 年 4 月 / 10 月', '以各省教育考试院公告为准'],
           ['公共课代码', '15044 / 15043', '马原与中国近现代史纲要'],
           ['学习闭环', '题库 → 考试 → 错题 → 规划', '自动沉淀薄弱点'],
-          ['数据来源', '官方入口 + 公开资源', '已替换占位链接'],
+          ['数据来源', '官方入口 + 公开资源', '仅展示真实链接'],
         ].map(([label, value, desc]) => (
           <div key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="text-sm text-slate-500">{label}</div>

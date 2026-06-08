@@ -191,7 +191,6 @@ const PlannerPage: React.FC = () => {
               type="date"
               value={examDate}
               onChange={(event) => setExamDate(event.target.value)}
-              min="2026-06-08"
               className="w-full px-4 py-2 border border-gray-300 rounded-lg"
             />
           </div>

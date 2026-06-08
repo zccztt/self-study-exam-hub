@@ -1,18 +1,47 @@
 # -*- coding: utf-8 -*-
 """Video resource service."""
 
-from datetime import datetime
+import html
+import base64
+import binascii
+import re
+import urllib.parse
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import httpx
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from backend.models.favorite import VideoFavorite
 from backend.models.question import Question
-from backend.models.video import Video, VideoQuestion
+from backend.models.subject import Subject
+from backend.models.chapter import Chapter
+from backend.models.video import Video, VideoQuestion, VideoSource
 
 
 class VideoService:
+    BILIBILI_SEARCH_URL = "https://api.bilibili.com/x/web-interface/search/type"
+    BING_SEARCH_URL = "https://www.bing.com/search"
+    SO_SEARCH_URL = "https://www.so.com/s"
+    USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+    )
+    INVALID_VIDEO_PATTERNS = [
+        "example.com",
+        "placeholder",
+        "占位",
+        "search.bilibili.com",
+        "/all?keyword=",
+        "zikao.neea.edu.cn",
+        "www.neea.edu.cn",
+        "官方入口",
+        "检索入口",
+        "B站检索",
+    ]
+
     def __init__(self, db: Session):
         self.db = db
 
@@ -25,19 +54,23 @@ class VideoService:
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, Any]:
-        query = self.db.query(Video).filter(Video.is_active == 1)
-
-        if keyword:
-            pattern = f"%{keyword.strip()}%"
-            query = query.filter(or_(Video.title.ilike(pattern), Video.description.ilike(pattern)))
-        if subject_id:
-            query = query.filter(Video.subject_id == subject_id)
-        if chapter_ids:
-            query = query.filter(Video.chapter_id.in_(chapter_ids))
-        if source:
-            query = query.filter(Video.source == source)
+        self._deactivate_invalid_videos()
+        query = self._build_search_query(keyword, subject_id, chapter_ids, source)
 
         total = query.count()
+        online_saved_count = 0
+        if total == 0 and page == 1:
+            online_saved_count = self._search_and_save_online_videos(
+                keyword=keyword,
+                subject_id=subject_id,
+                chapter_ids=chapter_ids,
+                source=source,
+                limit=max(8, min(page_size, 20)),
+            )
+            if online_saved_count:
+                query = self._build_search_query(keyword, subject_id, chapter_ids, source)
+                total = query.count()
+
         videos = (
             query.order_by(Video.view_count.desc(), Video.id.desc())
             .offset((page - 1) * page_size)
@@ -48,10 +81,18 @@ class VideoService:
             "total": total,
             "page": page,
             "page_size": page_size,
+            "online_saved_count": online_saved_count,
+            "online_searched": total == 0 or online_saved_count > 0,
+            "message": (
+                f"本地无匹配视频，已线上搜索并保存 {online_saved_count} 个真实视频链接。"
+                if online_saved_count
+                else None
+            ),
             "items": [self._serialize_video(video) for video in videos],
         }
 
     def get_video_detail(self, video_id: int) -> Optional[Dict[str, Any]]:
+        self._deactivate_invalid_videos()
         video = self.db.query(Video).filter(Video.id == video_id, Video.is_active == 1).first()
         if not video:
             return None
@@ -79,7 +120,7 @@ class VideoService:
 
     @staticmethod
     def validate_video_link(video_url: str) -> Dict[str, Any]:
-        valid = video_url.startswith(("http://", "https://"))
+        valid = VideoService._is_real_video_url(video_url)
         return {"valid": valid, "message": "Valid URL." if valid else "URL must start with http:// or https://."}
 
     def add_video(self, video_data: Dict[str, Any]) -> int:
@@ -126,6 +167,7 @@ class VideoService:
         return True
 
     def get_favorites(self, user_id: int, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        self._deactivate_invalid_videos()
         query = (
             self.db.query(Video)
             .join(VideoFavorite, Video.id == VideoFavorite.video_id)
@@ -140,6 +182,391 @@ class VideoService:
             "page_size": page_size,
             "items": [self._serialize_video(video) for video in videos],
         }
+
+    def _build_search_query(
+        self,
+        keyword: Optional[str],
+        subject_id: Optional[int],
+        chapter_ids: Optional[List[int]],
+        source: Optional[str],
+    ):
+        query = self.db.query(Video).filter(Video.is_active == 1)
+        if keyword:
+            pattern = f"%{keyword.strip()}%"
+            query = query.filter(or_(Video.title.ilike(pattern), Video.description.ilike(pattern), Video.tags.ilike(pattern)))
+        if subject_id:
+            query = query.filter(Video.subject_id == subject_id)
+        if chapter_ids:
+            query = query.filter(Video.chapter_id.in_(chapter_ids))
+        if source:
+            query = query.filter(Video.source == source)
+        return query
+
+    def _deactivate_invalid_videos(self) -> int:
+        rows = self.db.query(Video).filter(Video.is_active == 1).all()
+        changed = 0
+        for video in rows:
+            if self._is_invalid_video_record(video):
+                video.is_active = 0
+                changed += 1
+        if changed:
+            self.db.commit()
+        return changed
+
+    def _search_and_save_online_videos(
+        self,
+        *,
+        keyword: Optional[str],
+        subject_id: Optional[int],
+        chapter_ids: Optional[List[int]],
+        source: Optional[str],
+        limit: int,
+    ) -> int:
+        if source and source != VideoSource.BILIBILI.value:
+            return 0
+
+        subject = self._resolve_video_subject(subject_id)
+        if not subject:
+            return 0
+
+        chapter = self._resolve_video_chapter(chapter_ids)
+        search_keyword = self._build_video_search_keyword(keyword, subject, chapter)
+        online_items = self._search_bilibili_videos(search_keyword, limit=limit)
+        saved_count = 0
+        for item in online_items:
+            if self._save_online_video(item, subject.id, chapter.id if chapter else None, search_keyword):
+                saved_count += 1
+        if saved_count:
+            self.db.commit()
+        return saved_count
+
+    def _resolve_video_subject(self, subject_id: Optional[int]) -> Optional[Subject]:
+        if subject_id:
+            return self.db.query(Subject).filter(Subject.id == subject_id).first()
+        return self.db.query(Subject).order_by(Subject.code.asc(), Subject.id.asc()).first()
+
+    def _resolve_video_chapter(self, chapter_ids: Optional[List[int]]) -> Optional[Chapter]:
+        if not chapter_ids:
+            return None
+        return self.db.query(Chapter).filter(Chapter.id == chapter_ids[0]).first()
+
+    @staticmethod
+    def _build_video_search_keyword(keyword: Optional[str], subject: Subject, chapter: Optional[Chapter]) -> str:
+        parts = [
+            "自考",
+            str(datetime.now().year),
+            subject.code,
+            subject.name,
+            chapter.name if chapter else "",
+            keyword or "",
+            "精讲 真题 解析",
+        ]
+        return " ".join(part.strip() for part in parts if str(part or "").strip())
+
+    def _search_bilibili_videos(self, keyword: str, limit: int) -> List[Dict[str, Any]]:
+        videos: List[Dict[str, Any]] = []
+        try:
+            response = httpx.get(
+                self.BILIBILI_SEARCH_URL,
+                params={
+                    "search_type": "video",
+                    "keyword": keyword,
+                    "page": 1,
+                    "page_size": min(max(limit, 1), 20),
+                },
+                headers={"User-Agent": self.USER_AGENT, "Referer": "https://www.bilibili.com/"},
+                timeout=10,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            payload = {}
+
+        if payload.get("code") == 0:
+            for item in payload.get("data", {}).get("result") or []:
+                normalized = self._normalize_bilibili_item(item)
+                if normalized:
+                    videos.append(normalized)
+                if len(videos) >= limit:
+                    break
+        if videos:
+            return videos
+        videos.extend(self._search_bing_video_pages(keyword, limit=limit))
+        if len(videos) < limit:
+            videos.extend(self._search_so_video_pages(keyword, limit=limit - len(videos)))
+        return self._dedupe_video_items(videos)[:limit]
+
+    def _search_bing_video_pages(self, keyword: str, limit: int) -> List[Dict[str, Any]]:
+        queries = [
+            f"{keyword} bilibili BV",
+            f"{keyword} site:bilibili.com/video",
+            f"{keyword} B站 视频",
+        ]
+        videos: List[Dict[str, Any]] = []
+        for query in queries:
+            try:
+                response = httpx.get(
+                    self.BING_SEARCH_URL,
+                    params={"q": query, "format": "rss", "mkt": "zh-CN", "setlang": "zh-CN"},
+                    headers={"User-Agent": self.USER_AGENT},
+                    timeout=10,
+                    follow_redirects=True,
+                )
+                response.raise_for_status()
+                root = ET.fromstring(response.text)
+            except (httpx.HTTPError, ET.ParseError):
+                continue
+
+            for item in root.findall(".//item"):
+                title = self._clean_text(item.findtext("title"))
+                link = self._clean_url(item.findtext("link"))
+                description = self._clean_text(item.findtext("description"))
+                normalized = self._normalize_search_video_result(title, link, description)
+                if normalized:
+                    videos.append(normalized)
+                if len(videos) >= limit:
+                    return self._dedupe_video_items(videos)
+        return self._dedupe_video_items(videos)
+
+    def _search_so_video_pages(self, keyword: str, limit: int) -> List[Dict[str, Any]]:
+        videos: List[Dict[str, Any]] = []
+        try:
+            response = httpx.get(
+                self.SO_SEARCH_URL,
+                params={"q": f"{keyword} bilibili BV"},
+                headers={"User-Agent": self.USER_AGENT},
+                timeout=10,
+                follow_redirects=True,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return []
+
+        for block in re.findall(r"<li[^>]*>.*?</li>", response.text, re.S):
+            title_match = re.search(r"<h3[^>]*>.*?</h3>", block, re.S)
+            link_match = re.search(r'href="([^"]+)"', block)
+            title = self._clean_text(title_match.group(0) if title_match else "")
+            link = self._clean_url(link_match.group(1) if link_match else "")
+            description = self._clean_text(block)
+            normalized = self._normalize_search_video_result(title, link, description)
+            if normalized:
+                videos.append(normalized)
+            if len(videos) >= limit:
+                break
+        return self._dedupe_video_items(videos)
+
+    @classmethod
+    def _normalize_search_video_result(cls, title: str, link: str, description: str) -> Optional[Dict[str, Any]]:
+        combined = f"{link} {description}"
+        bvid = cls._extract_bvid(combined)
+        if not bvid:
+            return None
+        url = f"https://www.bilibili.com/video/{bvid}"
+        if not cls._is_real_video_url(url):
+            return None
+        clean_title = title or description[:80] or f"B站公开视频 {bvid}"
+        return {
+            "title": clean_title[:300],
+            "url": url,
+            "duration": None,
+            "author": "线上实时搜索",
+            "view_count": 0,
+            "publish_date": None,
+            "thumbnail": None,
+        }
+
+    @staticmethod
+    def _dedupe_video_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen = set()
+        deduped: List[Dict[str, Any]] = []
+        for item in items:
+            url = item.get("url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            deduped.append(item)
+        return deduped
+
+    def _save_online_video(
+        self,
+        item: Dict[str, Any],
+        subject_id: int,
+        chapter_id: Optional[int],
+        search_keyword: str,
+    ) -> bool:
+        url = str(item.get("url") or "").strip()
+        if not self._is_real_video_url(url):
+            return False
+        existing = self.db.query(Video).filter(Video.url == url).first()
+        if existing:
+            changed = existing.is_active != 1
+            existing.is_active = 1
+            existing.subject_id = existing.subject_id or subject_id
+            existing.chapter_id = existing.chapter_id or chapter_id
+            existing.view_count = max(existing.view_count or 0, int(item.get("view_count") or 0))
+            existing.thumbnail = existing.thumbnail or item.get("thumbnail")
+            existing.tags = list(dict.fromkeys([*(existing.tags or []), "线上补充", "真实视频"]))
+            return changed
+
+        video = Video(
+            title=item["title"],
+            url=url,
+            source=VideoSource.BILIBILI.value,
+            duration=item.get("duration"),
+            author=item.get("author"),
+            view_count=int(item.get("view_count") or 0),
+            publish_date=item.get("publish_date"),
+            subject_id=subject_id,
+            chapter_id=chapter_id,
+            thumbnail=item.get("thumbnail"),
+            description=f"线上实时搜索并保存的公开视频资源。检索词：{search_keyword}",
+            tags=["线上补充", "真实视频", f"{datetime.now().year}备考"],
+            is_active=1,
+        )
+        self.db.add(video)
+        return True
+
+    @classmethod
+    def _normalize_bilibili_item(cls, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        title = cls._clean_text(item.get("title"))
+        bvid = item.get("bvid") or cls._extract_bvid(str(item.get("arcurl") or item.get("url") or ""))
+        if not title or not bvid:
+            return None
+        return {
+            "title": title[:300],
+            "url": f"https://www.bilibili.com/video/{bvid}",
+            "duration": cls._parse_duration(item.get("duration")),
+            "author": cls._clean_text(item.get("author") or item.get("mid"))[:100],
+            "view_count": cls._parse_count(item.get("play")),
+            "publish_date": cls._parse_publish_date(item.get("pubdate") or item.get("senddate")),
+            "thumbnail": cls._normalize_image_url(item.get("pic")),
+        }
+
+    @classmethod
+    def _is_invalid_video_record(cls, video: Video) -> bool:
+        combined = " ".join(
+            str(value or "")
+            for value in [video.url, video.title, video.description, " ".join(video.tags or [])]
+        )
+        if any(pattern.lower() in combined.lower() for pattern in cls.INVALID_VIDEO_PATTERNS):
+            return True
+        return not cls._is_real_video_url(video.url)
+
+    @staticmethod
+    def _is_real_video_url(video_url: str) -> bool:
+        url = str(video_url or "").strip().lower()
+        if not url.startswith(("http://", "https://")):
+            return False
+        if "bilibili.com/video/bv" in url:
+            return True
+        if "youtu.be/" in url or "youtube.com/watch" in url:
+            return True
+        if "v.qq.com/x/" in url:
+            return True
+        if "open.163.com/newview/movie" in url or "study.163.com/course/" in url:
+            return True
+        return False
+
+    @staticmethod
+    def _extract_bvid(value: str) -> Optional[str]:
+        match = re.search(r"(BV[0-9A-Za-z]{10})", value)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _clean_text(value: Any) -> str:
+        text = html.unescape(str(value or ""))
+        text = re.sub(r"<[^>]+>", "", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    @classmethod
+    def _clean_url(cls, value: Any) -> str:
+        url = html.unescape(str(value or "")).strip()
+        if not url:
+            return ""
+        if url.startswith("//"):
+            url = f"https:{url}"
+
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.scheme and not parsed.netloc:
+            return url
+
+        query = urllib.parse.parse_qs(parsed.query)
+        if "bing.com" in parsed.netloc and parsed.path.startswith("/ck/"):
+            decoded = cls._decode_redirect_target(query)
+            if decoded:
+                return decoded
+        if parsed.netloc.endswith("so.com") or parsed.netloc.endswith("360.cn"):
+            decoded = cls._decode_redirect_target(query)
+            if decoded:
+                return decoded
+        return url
+
+    @staticmethod
+    def _decode_redirect_target(query: Dict[str, List[str]]) -> str:
+        for key in ("url", "u", "r", "target"):
+            for raw_value in query.get(key, []):
+                value = urllib.parse.unquote(raw_value).strip()
+                if value.startswith(("http://", "https://")):
+                    return value
+                encoded = value[2:] if value.startswith("a1") else value
+                padding = "=" * (-len(encoded) % 4)
+                try:
+                    decoded = base64.urlsafe_b64decode(f"{encoded}{padding}").decode("utf-8", errors="ignore")
+                except (binascii.Error, ValueError, TypeError):
+                    continue
+                if decoded.startswith(("http://", "https://")):
+                    return decoded
+        return ""
+
+    @staticmethod
+    def _parse_count(value: Any) -> int:
+        if isinstance(value, int):
+            return value
+        text = str(value or "").replace(",", "").strip()
+        if not text or text == "--":
+            return 0
+        multiplier = 1
+        if text.endswith("万"):
+            multiplier = 10000
+            text = text[:-1]
+        elif text.endswith("亿"):
+            multiplier = 100000000
+            text = text[:-1]
+        try:
+            return int(float(text) * multiplier)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _parse_duration(value: Any) -> Optional[int]:
+        if isinstance(value, int):
+            return value
+        text = str(value or "").strip()
+        if text.isdigit():
+            return int(text)
+        parts = [int(part) for part in text.split(":") if part.isdigit()]
+        if len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+        return None
+
+    @staticmethod
+    def _parse_publish_date(value: Any) -> Optional[datetime]:
+        try:
+            return datetime.fromtimestamp(int(value), tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _normalize_image_url(value: Any) -> Optional[str]:
+        url = str(value or "").strip()
+        if not url:
+            return None
+        if url.startswith("//"):
+            return f"https:{url}"
+        return url
 
     @staticmethod
     def _serialize_video(video: Video) -> Dict[str, Any]:

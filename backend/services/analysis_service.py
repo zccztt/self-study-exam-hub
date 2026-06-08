@@ -2,6 +2,7 @@
 """Knowledge point analytics service."""
 
 from collections import Counter, defaultdict
+from datetime import datetime
 import re
 from typing import Any, Dict, List
 
@@ -10,6 +11,53 @@ from sqlalchemy.orm import Session
 
 from backend.models.chapter import Chapter, KnowledgePoint, QuestionKnowledgePoint
 from backend.models.question import Question
+from backend.models.subject import Subject
+
+
+QUESTION_TYPE_BLUEPRINTS = {
+    "computer": [
+        ("single_choice", 10),
+        ("multiple_choice", 5),
+        ("fill_blank", 5),
+        ("short_answer", 4),
+        ("case", 2),
+    ],
+    "law": [
+        ("single_choice", 8),
+        ("multiple_choice", 5),
+        ("short_answer", 4),
+        ("essay", 2),
+        ("case", 3),
+    ],
+    "medicine": [
+        ("single_choice", 10),
+        ("multiple_choice", 5),
+        ("fill_blank", 4),
+        ("short_answer", 4),
+        ("case", 2),
+    ],
+    "economics_management": [
+        ("single_choice", 10),
+        ("multiple_choice", 5),
+        ("fill_blank", 4),
+        ("short_answer", 4),
+        ("case", 2),
+    ],
+    "public": [
+        ("single_choice", 8),
+        ("multiple_choice", 5),
+        ("short_answer", 4),
+        ("essay", 2),
+        ("case", 1),
+    ],
+    "default": [
+        ("single_choice", 8),
+        ("multiple_choice", 4),
+        ("fill_blank", 4),
+        ("short_answer", 4),
+        ("essay", 2),
+    ],
+}
 
 
 class AnalysisService:
@@ -35,6 +83,7 @@ class AnalysisService:
         points_by_chapter: Dict[int, List[KnowledgePoint]] = defaultdict(list)
         for point in points:
             points_by_chapter[point.chapter_id].append(point)
+        linked_counts = self._point_linked_counts([point.id for point in points])
 
         return {
             "subject_id": subject_id,
@@ -43,6 +92,7 @@ class AnalysisService:
                     "id": chapter.id,
                     "name": chapter.name,
                     "order": chapter.order,
+                    "description": chapter.description,
                     "points": [
                         {
                             "id": point.id,
@@ -50,7 +100,7 @@ class AnalysisService:
                             "description": point.description,
                             "importance": point.importance,
                             "frequency": point.frequency,
-                            "detail": self._point_detail(point, chapter.name, 0),
+                            "detail": self._point_detail(point, chapter.name, linked_counts.get(point.id, 0)),
                         }
                         for point in points_by_chapter.get(chapter.id, [])
                     ],
@@ -109,6 +159,10 @@ class AnalysisService:
             .all()
         )
         values = [{"year": year, "count": count} for year, count in rows[-years:]]
+        if not values:
+            point = self.db.query(KnowledgePoint).filter(KnowledgePoint.id == point_id).first()
+            if point:
+                values = [{"year": datetime.now().year, "count": point.frequency or 0}]
         return {"subject_id": subject_id, "point_id": point_id, "values": values}
 
     def get_word_cloud_data(self, subject_id: int) -> List[Dict[str, Any]]:
@@ -145,17 +199,42 @@ class AnalysisService:
         return [{"word": word, "weight": weight} for word, weight in tokens.most_common(30)]
 
     def get_chapter_heatmap(self, subject_id: int) -> Dict[str, Any]:
-        rows = (
-            self.db.query(Chapter.id, Chapter.name, func.count(Question.id))
-            .outerjoin(Question, Question.chapter_id == Chapter.id)
+        chapters = (
+            self.db.query(Chapter)
             .filter(Chapter.subject_id == subject_id)
-            .group_by(Chapter.id, Chapter.name)
             .order_by(Chapter.order.asc(), Chapter.id.asc())
             .all()
         )
+        question_counts = {
+            chapter_id: count
+            for chapter_id, count in (
+                self.db.query(Question.chapter_id, func.count(Question.id))
+                .filter(Question.subject_id == subject_id, Question.chapter_id.isnot(None))
+                .group_by(Question.chapter_id)
+                .all()
+            )
+        }
+        point_counts = {
+            chapter_id: count or 0
+            for chapter_id, count in (
+                self.db.query(KnowledgePoint.chapter_id, func.sum(KnowledgePoint.frequency))
+                .filter(KnowledgePoint.chapter_id.in_([chapter.id for chapter in chapters]))
+                .group_by(KnowledgePoint.chapter_id)
+                .all()
+                if chapters
+                else []
+            )
+        }
         return {
             "subject_id": subject_id,
-            "chapters": [{"id": chapter_id, "name": name, "frequency": count} for chapter_id, name, count in rows],
+            "chapters": [
+                {
+                    "id": chapter.id,
+                    "name": chapter.name,
+                    "frequency": max(question_counts.get(chapter.id, 0), point_counts.get(chapter.id, 0)),
+                }
+                for chapter in chapters
+            ],
         }
 
     def get_question_type_distribution(self, subject_id: int) -> Dict[str, Any]:
@@ -166,6 +245,25 @@ class AnalysisService:
             .all()
         )
         total = sum(count for _, count in rows)
+        if not total:
+            subject = self.db.query(Subject).filter(Subject.id == subject_id).first()
+            blueprint = QUESTION_TYPE_BLUEPRINTS.get(
+                subject.category if subject else "",
+                QUESTION_TYPE_BLUEPRINTS["default"],
+            )
+            total = sum(count for _, count in blueprint)
+            return {
+                "subject_id": subject_id,
+                "total": total,
+                "items": [
+                    {
+                        "question_type": question_type,
+                        "count": count,
+                        "percentage": round(count / total * 100, 2) if total else 0,
+                    }
+                    for question_type, count in blueprint
+                ],
+            }
         return {
             "subject_id": subject_id,
             "total": total,
@@ -217,34 +315,51 @@ class AnalysisService:
             f"{trend_text}。建议按“概念-原理-方法论-材料应用”四步复习。"
         )
 
+    def _point_linked_counts(self, point_ids: List[int]) -> Dict[int, int]:
+        if not point_ids:
+            return {}
+        return {
+            point_id: count
+            for point_id, count in (
+                self.db.query(QuestionKnowledgePoint.knowledge_point_id, func.count(QuestionKnowledgePoint.question_id))
+                .filter(QuestionKnowledgePoint.knowledge_point_id.in_(point_ids))
+                .group_by(QuestionKnowledgePoint.knowledge_point_id)
+                .all()
+            )
+        }
+
     @staticmethod
     def _point_detail(point: KnowledgePoint, chapter_name: str, linked_count: int) -> Dict[str, Any]:
         importance_label = "高频必背" if point.importance == "high" else "稳定掌握"
         base_description = point.description or "该考点需要结合教材定义、基本原理和典型材料综合理解。"
+        point_name = point.name
         return {
             "overview": base_description,
             "chapter_name": chapter_name,
             "importance_label": importance_label,
             "linked_question_count": linked_count,
             "exam_focus": [
-                "准确写出核心概念和原理表述",
-                "能区分相近概念，避免只背关键词",
-                "能把原理转化为简答题或材料分析题的作答层次",
+                f"说清“{point_name}”在“{chapter_name}”中的定义、对象和适用边界",
+                "把教材术语拆成选择题判断点、简答题得分点和材料题分析点",
+                "能区分相近概念，避免把条件、特征、作用和方法混写",
+                "结合当前备考年度要求，优先训练高频客观题和主观题分层表达",
             ],
             "answer_template": [
-                "第一步：点明概念或基本原理",
-                "第二步：展开内在关系、方法论或历史影响",
-                "第三步：结合材料或现实场景说明应用",
-                "第四步：补充易错边界，形成完整结论",
+                f"第一步：点明“{point_name}”的核心概念或基本判断",
+                "第二步：按“条件/特征/作用/方法”展开 2-4 个得分点",
+                "第三步：回到题干材料，指出关键词对应的教材考点",
+                "第四步：补充边界条件或易错提醒，形成明确结论",
             ],
             "common_mistakes": [
                 "只写结论，不解释原理之间的关系",
                 "把教材术语口语化，导致得分点不完整",
+                f"把“{point_name}”与同章节相近考点混淆",
                 "材料题脱离题干，未体现具体问题具体分析",
             ],
             "study_advice": [
-                "先用 10 分钟整理概念卡片，再做 3 道对应题",
+                f"先用 10 分钟整理“{point_name}”概念卡片，再做 3 道对应题",
                 "错题按“概念不清、审题偏差、表达缺项”三类标记",
+                "章节练习优先选择本考点所在章节，题库不足时允许线上生成并保存",
                 "考前一周用简答题模板复述，检查是否能独立成段",
             ],
         }

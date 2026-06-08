@@ -21,16 +21,8 @@ DEMO_USERNAME = "demo"
 DEMO_PASSWORD = "demo123456"
 DEMO_EMAIL = "demo@self-study-exam-hub.local"
 
-OFFICIAL_SELF_STUDY_URL = "https://zikao.neea.edu.cn/"
-OFFICIAL_NEEA_URL = "https://www.neea.edu.cn/"
-BILIBILI_MARX_URL = (
-    "https://search.bilibili.com/all?keyword="
-    "%E8%87%AA%E8%80%83%20%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E5%9F%BA%E6%9C%AC%E5%8E%9F%E7%90%86"
-)
-BILIBILI_HISTORY_URL = (
-    "https://search.bilibili.com/all?keyword="
-    "%E8%87%AA%E8%80%83%20%E4%B8%AD%E5%9B%BD%E8%BF%91%E7%8E%B0%E4%BB%A3%E5%8F%B2%E7%BA%B2%E8%A6%81"
-)
+BILIBILI_MARX_URL = "https://www.bilibili.com/video/BV1hW41167NW"
+BILIBILI_HISTORY_URL = "https://www.bilibili.com/video/BV1t4411e7Q5"
 
 
 def init_database() -> None:
@@ -201,8 +193,75 @@ def _ensure_video_question(db, video_id: int, question_id: int) -> None:
         db.commit()
 
 
+DEFAULT_OUTLINE_FOCUS = {
+    "public": ["理论来源与核心概念", "基本原理与方法论", "历史脉络与制度发展", "材料分析与现实应用"],
+    "law": ["法律概念与法律关系", "主体权利义务与责任", "制度规则与程序适用", "案例分析与法条运用"],
+    "medicine": ["基础概念与专业规范", "核心机制与临床应用", "护理药学或卫生管理要点", "病例分析与实践安全"],
+    "computer": ["基础概念与系统结构", "数据处理与算法方法", "网络数据库与程序应用", "操作实践与综合应用"],
+    "education": ["教育理论与发展基础", "课程教学与活动设计", "儿童学生发展与评价", "教育管理与实践反思"],
+    "language": ["语言基础与文本理解", "阅读翻译与表达规则", "写作结构与语篇分析", "文学文化与综合应用"],
+    "design": ["设计史论与审美基础", "形式语言与设计方法", "产品媒介与表现流程", "案例评析与创意实践"],
+    "economics_management": ["基本概念与管理原理", "市场财务与组织运行", "决策分析与制度工具", "案例计算与综合应用"],
+    "engineering": ["工程基础与结构原理", "材料设备与技术方法", "计算分析与施工管理", "规范应用与综合案例"],
+    "public_security": ["公安司法基础理论", "制度职责与业务流程", "风险识别与处置方法", "案例研判与规范执法"],
+    "professional": ["课程基础概念", "核心理论与方法", "实务流程与应用场景", "综合题型与复习归纳"],
+}
+
+
+def _build_default_outline(subject: Subject) -> list[dict]:
+    focus_items = DEFAULT_OUTLINE_FOCUS.get(subject.category, DEFAULT_OUTLINE_FOCUS["professional"])
+    chapters: list[dict] = []
+    for index, focus in enumerate(focus_items, start=1):
+        chapter_name = f"第{index}单元 {subject.name}：{focus}"
+        chapters.append(
+            {
+                "name": chapter_name,
+                "order": index,
+                "description": (
+                    f"依据 2026 年全国统考课程目录中“{subject.code} {subject.name}”建立的备考章节，"
+                    f"用于章节练习、考点分析和后续线上题源生成。重点围绕{focus}组织复习。"
+                ),
+                "points": _build_default_points(subject, focus, index),
+            }
+        )
+    return chapters
+
+
+def _build_default_points(subject: Subject, focus: str, chapter_order: int) -> list[dict]:
+    base_frequency = max(3, 9 - chapter_order)
+    return [
+        {
+            "name": f"{subject.name}{focus}的核心概念",
+            "importance": "high" if chapter_order <= 2 else "medium",
+            "frequency": base_frequency,
+            "description": (
+                f"围绕课程代码 {subject.code} 的“{focus}”掌握基本定义、适用范围和常见表述。"
+                "选择题通常考查概念边界，主观题通常要求先定义再展开要点。"
+            ),
+        },
+        {
+            "name": f"{subject.name}{focus}的关键方法",
+            "importance": "high" if chapter_order in (2, 3) else "medium",
+            "frequency": max(3, base_frequency - 1),
+            "description": (
+                f"掌握{subject.name}在“{focus}”中的分析步骤、判断依据和解题顺序。"
+                "复习时应把教材术语转化为可直接书写的答题层次。"
+            ),
+        },
+        {
+            "name": f"{subject.name}{focus}的综合应用",
+            "importance": "medium",
+            "frequency": max(2, base_frequency - 2),
+            "description": (
+                f"结合{subject.name}历年自考常见题型，训练“材料定位、要点展开、结论归纳”的完整表达。"
+                "该考点适合用于章节练习和考前综合复盘。"
+            ),
+        },
+    ]
+
+
 def _normalize_legacy_demo_questions(db) -> None:
-    rows = db.query(Question).filter(or_(Question.year.is_(None), Question.year < 2026)).all()
+    rows = db.query(Question).filter(Question.year.is_(None)).all()
     for question in rows:
         question.year = 2026
         question.month = 4 if question.month in (None, 4) else 10
@@ -213,10 +272,21 @@ def _normalize_legacy_demo_questions(db) -> None:
 
 
 def _deactivate_placeholder_links(db) -> None:
-    rows = db.query(Video).filter(Video.url.like("%example.com%")).all()
+    rows = db.query(Video).all()
     for video in rows:
-        video.is_active = 0
-        video.description = "历史占位链接已停用，请使用 2026 官方入口或公开检索资源。"
+        text = " ".join(str(value or "") for value in [video.url, video.title, video.description])
+        url = (video.url or "").lower()
+        is_real_video = (
+            "bilibili.com/video/bv" in url
+            or "youtube.com/watch" in url
+            or "youtu.be/" in url
+            or "v.qq.com/x/" in url
+            or "open.163.com/newview/movie" in url
+            or "study.163.com/course/" in url
+        )
+        if (not is_real_video) or "example.com" in text or "占位" in text or "检索入口" in text or "官方入口" in text:
+            video.is_active = 0
+            video.description = "历史无效链接已停用，资源中心会在本地无匹配时线上搜索真实视频并保存。"
     if rows:
         db.commit()
 
@@ -526,41 +596,23 @@ VIDEOS = {
     "15044": [
         {
             "chapter_order": 2,
-            "title": "B站检索：2026 自考马克思主义基本原理精讲",
+            "title": "B站公开课：自考马克思主义基本原理精讲",
             "url": BILIBILI_MARX_URL,
             "source": VideoSource.BILIBILI.value,
-            "author": "哔哩哔哩公开检索",
-            "description": "真实 B 站检索入口，便于按最新播放量筛选马原精讲、冲刺、刷题课。",
+            "author": "哔哩哔哩公开资源",
+            "description": "真实 B 站公开视频链接，用于马原考点精讲、冲刺和刷题复习。",
             "tags": ["2026备考", "马原", "公开视频"],
-        },
-        {
-            "chapter_order": 1,
-            "title": "教育部教育考试院：高等教育自学考试官方入口",
-            "url": OFFICIAL_SELF_STUDY_URL,
-            "source": VideoSource.CUSTOM.value,
-            "author": "教育部教育考试院",
-            "description": "官方自学考试信息入口，报名、政策和考试安排以各省教育考试院发布为准。",
-            "tags": ["官方入口", "考试政策", "2026"],
         },
     ],
     "15043": [
         {
             "chapter_order": 1,
-            "title": "B站检索：2026 自考中国近现代史纲要精讲",
+            "title": "B站公开课：自考中国近现代史纲要精讲",
             "url": BILIBILI_HISTORY_URL,
             "source": VideoSource.BILIBILI.value,
-            "author": "哔哩哔哩公开检索",
-            "description": "真实 B 站检索入口，用于筛选近现代史纲要章节精讲、考点串讲和冲刺课。",
+            "author": "哔哩哔哩公开资源",
+            "description": "真实 B 站公开视频链接，用于近现代史纲要章节精讲、考点串讲和冲刺复习。",
             "tags": ["2026备考", "近现代史", "公开视频"],
-        },
-        {
-            "chapter_order": 2,
-            "title": "中国教育考试网：教育考试信息发布入口",
-            "url": OFFICIAL_NEEA_URL,
-            "source": VideoSource.CUSTOM.value,
-            "author": "教育部教育考试院",
-            "description": "官方考试信息发布入口，可核对自考政策、考试新闻和服务入口。",
-            "tags": ["官方入口", "考试服务", "2026"],
         },
     ],
 }
@@ -585,6 +637,16 @@ def seed_demo_data() -> None:
                 for point_data in chapter_data["points"]:
                     point = _ensure_point(db, chapter.id, point_data)
                     points_by_name[point.name] = point
+
+        for code, subject in subjects_by_code.items():
+            has_chapters = db.query(Chapter.id).filter(Chapter.subject_id == subject.id).first()
+            if has_chapters:
+                continue
+            for chapter_data in _build_default_outline(subject):
+                chapter = _ensure_chapter(db, subject.id, chapter_data)
+                chapters_by_subject_and_order[(code, chapter.order)] = chapter
+                for point_data in chapter_data["points"]:
+                    _ensure_point(db, chapter.id, point_data)
 
         created_questions: list[Question] = []
         for code, questions in QUESTIONS.items():

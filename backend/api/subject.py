@@ -67,7 +67,12 @@ async def get_subject_detail(subject_id: int, db: Session = Depends(get_db)):
             "exam_duration": subject.exam_duration,
             "total_score": subject.total_score,
             "chapters": [
-                {"id": chapter.id, "name": chapter.name, "order": chapter.order}
+                {
+                    "id": chapter.id,
+                    "name": chapter.name,
+                    "order": chapter.order,
+                    "description": chapter.description,
+                }
                 for chapter in chapters
             ],
         },

@@ -14,6 +14,7 @@ export interface Chapter {
   id: number
   name: string
   order: number
+  description?: string
 }
 
 export interface SubjectDetail extends Subject {

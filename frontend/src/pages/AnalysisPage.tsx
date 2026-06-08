@@ -18,6 +18,7 @@ const questionTypeLabels: Record<string, string> = {
   essay: '论述题',
   case: '案例题',
 }
+const CURRENT_EXAM_YEAR = new Date().getFullYear()
 
 const AnalysisPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([])
@@ -108,7 +109,7 @@ const AnalysisPage: React.FC = () => {
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <div className="text-sm font-medium text-blue-600">2026 高频考点库</div>
+            <div className="text-sm font-medium text-blue-600">{CURRENT_EXAM_YEAR} 高频考点库</div>
             <h1 className="mt-1 text-3xl font-bold text-slate-950">考点分析</h1>
             <p className="mt-2 text-sm text-slate-500">按章节、频次、题型和趋势拆解重点，选中考点可查看详细作答说明。</p>
           </div>
@@ -297,12 +298,18 @@ const AnalysisPage: React.FC = () => {
             {(knowledgeTree?.chapters || []).map((chapter) => (
               <div key={chapter.id} className="border-l-4 border-blue-100 pl-4">
                 <div className="font-medium">{chapter.name}</div>
+                {chapter.description && (
+                  <div className="mt-1 text-sm leading-6 text-gray-500">{chapter.description}</div>
+                )}
                 <div className="mt-2 flex flex-wrap gap-2">
                   {chapter.points.map((point) => (
                     <span key={point.id} className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-700">
                       {point.name} · {point.frequency}
                     </span>
                   ))}
+                  {chapter.points.length === 0 && (
+                    <span className="text-sm text-gray-500">该章节暂无考点</span>
+                  )}
                 </div>
               </div>
             ))}

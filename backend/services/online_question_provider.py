@@ -8,6 +8,7 @@ import html
 import re
 import urllib.parse
 import xml.etree.ElementTree as ET
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -27,6 +28,7 @@ class OnlineQuestionProvider:
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
     )
     QUESTION_SOURCE_PATTERN = re.compile(r"(自考|真题|试题|题库|练习题|习题|考试|答案|解析)")
+    YEAR_PATTERN = re.compile(r"(?<!\d)(20\d{2})(?!\d)")
 
     def search(
         self,
@@ -35,9 +37,16 @@ class OnlineQuestionProvider:
         subject_code: Optional[str],
         subject_name: Optional[str],
         keyword: Optional[str],
+        year: Optional[int] = None,
         limit: int = 8,
     ) -> List[Dict[str, Any]]:
-        queries = self._build_queries(subject_code=subject_code, subject_name=subject_name, keyword=keyword)
+        target_year = self._normalize_year(year)
+        queries = self._build_queries(
+            subject_code=subject_code,
+            subject_name=subject_name,
+            keyword=keyword,
+            year=target_year,
+        )
         if not queries:
             return []
 
@@ -49,6 +58,7 @@ class OnlineQuestionProvider:
                 subject_id=subject_id,
                 subject_code=subject_code,
                 subject_name=subject_name,
+                year=target_year,
                 limit=limit,
             )
             if len(candidates) < limit:
@@ -58,6 +68,7 @@ class OnlineQuestionProvider:
                         subject_id=subject_id,
                         subject_code=subject_code,
                         subject_name=subject_name,
+                        year=target_year,
                         limit=limit,
                     )
                 )
@@ -80,6 +91,7 @@ class OnlineQuestionProvider:
         subject_id: Optional[int],
         subject_code: Optional[str],
         subject_name: Optional[str],
+        year: int,
         limit: int,
     ) -> List[Dict[str, Any]]:
         try:
@@ -99,19 +111,27 @@ class OnlineQuestionProvider:
             subject_id=subject_id,
             subject_code=subject_code,
             subject_name=subject_name,
+            year=year,
             limit=limit,
         )
 
     @staticmethod
-    def _build_queries(*, subject_code: Optional[str], subject_name: Optional[str], keyword: Optional[str]) -> List[str]:
+    def _build_queries(
+        *,
+        subject_code: Optional[str],
+        subject_name: Optional[str],
+        keyword: Optional[str],
+        year: int,
+    ) -> List[str]:
         name = (subject_name or "").strip()
         code = (subject_code or "").strip()
         term = (keyword or "").strip()
+        year_text = str(year)
         queries = [
-            " ".join(part for part in [name, term, "自考 真题 试题"] if part),
-            " ".join(part for part in [name, "自考 题库 答案 解析"] if part),
-            " ".join(part for part in [term, "自考 真题 试题"] if part),
-            " ".join(part for part in [code, name, "自考 真题"] if part),
+            " ".join(part for part in [name, term, year_text, "自考 真题 试题"] if part),
+            " ".join(part for part in [name, year_text, "自考 题库 答案 解析"] if part),
+            " ".join(part for part in [term, year_text, "自考 真题 试题"] if part),
+            " ".join(part for part in [code, name, year_text, "自考 真题"] if part),
         ]
         return [query for query in dict.fromkeys(queries) if query.strip()]
 
@@ -122,6 +142,7 @@ class OnlineQuestionProvider:
         subject_id: Optional[int],
         subject_code: Optional[str],
         subject_name: Optional[str],
+        year: int,
         limit: int,
     ) -> List[Dict[str, Any]]:
         try:
@@ -159,7 +180,7 @@ class OnlineQuestionProvider:
                     "question_type": "online_resource",
                     "options": [],
                     "difficulty": "medium",
-                    "year": 2026,
+                    "year": self._extract_year(combined, year),
                     "month": None,
                     "frequency": 1,
                     "subject_id": subject_id or 0,
@@ -183,6 +204,7 @@ class OnlineQuestionProvider:
         subject_id: Optional[int],
         subject_code: Optional[str],
         subject_name: Optional[str],
+        year: int,
         limit: int,
     ) -> List[Dict[str, Any]]:
         try:
@@ -211,7 +233,7 @@ class OnlineQuestionProvider:
                     "question_type": "online_resource",
                     "options": [],
                     "difficulty": "medium",
-                    "year": 2026,
+                    "year": self._extract_year(combined, year),
                     "month": None,
                     "frequency": 1,
                     "subject_id": subject_id or 0,
@@ -249,3 +271,18 @@ class OnlineQuestionProvider:
     def _stable_negative_id(value: str) -> int:
         digest = hashlib.sha1(value.encode("utf-8")).hexdigest()
         return -int(digest[:8], 16)
+
+    @staticmethod
+    def _normalize_year(value: Optional[int]) -> int:
+        try:
+            year = int(value) if value is not None else datetime.now().year
+        except (TypeError, ValueError):
+            year = datetime.now().year
+        return max(2000, min(2100, year))
+
+    @classmethod
+    def _extract_year(cls, text: str, default: int) -> int:
+        match = cls.YEAR_PATTERN.search(text or "")
+        if not match:
+            return default
+        return cls._normalize_year(int(match.group(1)))
