@@ -62,6 +62,42 @@ export interface WordCloudItem {
   weight: number
 }
 
+export interface KnowledgeNetworkNode {
+  id: number
+  name: string
+  chapter_name?: string
+  frequency: number
+  trend?: string
+  importance?: string
+  question_count?: number
+}
+
+export interface KnowledgeNetworkEdge {
+  source: number
+  target: number
+  weight: number
+  source_name?: string
+  target_name?: string
+}
+
+export interface KnowledgeNetwork {
+  subject_id: number
+  nodes: KnowledgeNetworkNode[]
+  edges: KnowledgeNetworkEdge[]
+}
+
+export interface HotspotAlert {
+  point_id: number
+  name: string
+  chapter_name?: string
+  severity: 'high' | 'medium' | string
+  trend: string
+  trend_slope: number
+  confidence: number
+  priority_score: number
+  message: string
+}
+
 export interface ChapterHeatmapItem {
   id: number
   name: string
@@ -98,10 +134,16 @@ export const analysisApi = {
     ),
   getWordCloud: (subjectId: number) =>
     unwrap<WordCloudItem[]>(apiClient.get(`/analysis/word-cloud/${subjectId}`)),
+  getKnowledgeNetwork: (subjectId: number, limit = 30) =>
+    unwrap<KnowledgeNetwork>(
+      apiClient.get(`/analysis/knowledge-network/${subjectId}`, { params: { limit } }),
+    ),
   getChapterHeatmap: (subjectId: number) =>
     unwrap<ChapterHeatmap>(apiClient.get(`/analysis/chapter-heatmap/${subjectId}`)),
   getQuestionTypeDistribution: (subjectId: number) =>
     unwrap<QuestionTypeDistribution>(apiClient.get(`/analysis/question-types/${subjectId}`)),
   predictNextExam: (subjectId: number) =>
     unwrap<HighFrequencyPoint[]>(apiClient.get(`/analysis/prediction/${subjectId}`)),
+  getHotspots: (subjectId: number) =>
+    unwrap<HotspotAlert[]>(apiClient.get(`/analysis/hotspots/${subjectId}`)),
 }

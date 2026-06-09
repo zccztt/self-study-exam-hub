@@ -16,6 +16,8 @@ export interface StudyPlan {
     weekly_goals?: WeeklyGoal[]
     daily_template?: FocusBlock[]
     milestones?: Milestone[]
+    mock_exams?: MockExamNode[]
+    sprint_plan?: SprintPlanItem[]
     review_schedule?: ReviewScheduleItem[]
     resource_strategy?: Array<{ type: string; action: string }>
     risk_alerts?: string[]
@@ -65,8 +67,24 @@ export interface Milestone {
   check: string
 }
 
+export interface MockExamNode {
+  date: string
+  subject_id: number
+  title: string
+  duration_minutes: number
+  review_focus: string[]
+}
+
+export interface SprintPlanItem {
+  date: string
+  day: number
+  action: string
+  focus_points: Array<{ id?: number; name?: string }>
+}
+
 export interface ReviewScheduleItem {
   date: string
+  review_type?: string
   review_points: Array<Record<string, unknown>>
 }
 

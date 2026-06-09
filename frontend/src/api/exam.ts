@@ -25,6 +25,7 @@ export interface ConstraintReport {
   chapter_coverage_actual: number
   covered_chapter_ids: number[]
   target_chapter_ids: number[]
+  recent_done_excluded_count?: number
   satisfied: boolean
   relaxed: string[]
 }

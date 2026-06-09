@@ -430,18 +430,43 @@ class PlannerService:
                 )
                 review_points = [{"id": point.id, "name": point.name} for point in points]
 
+            is_mock_day = self._is_mock_exam_day(offset, days)
+            is_sprint_day = offset >= max(0, days - 7)
+            task_type = (
+                "全真模考"
+                if is_mock_day
+                else "冲刺回顾"
+                if is_sprint_day
+                else "间隔复习"
+                if subject_due_reviews
+                else self._task_type(offset)
+            )
+            focus_blocks = (
+                self._build_mock_focus_blocks(daily_hours)
+                if is_mock_day
+                else self._build_sprint_focus_blocks(daily_hours, review_points)
+                if is_sprint_day
+                else self._build_focus_blocks(daily_hours, review_points)
+            )
+            question_count = (
+                max(30, int(daily_hours * 18))
+                if is_mock_day
+                else max(20, int(daily_hours * 15))
+                if is_sprint_day
+                else max(10, int(daily_hours * (10 if subject_due_reviews else 12)))
+            )
             chapter_ids = [chapter.id] if chapter else []
             tasks.append(
                 {
                     "date": task_date.isoformat(),
                     "subject_id": subject_id,
                     "chapter_ids": chapter_ids,
-                    "task_type": "间隔复习" if subject_due_reviews else self._task_type(offset),
+                    "task_type": task_type,
                     "estimated_hours": daily_hours,
-                    "question_count": max(10, int(daily_hours * (10 if subject_due_reviews else 12))),
+                    "question_count": question_count,
                     "video_ids": self._recommend_video_ids(subject_id, chapter_ids),
                     "review_points": review_points,
-                    "focus_blocks": self._build_focus_blocks(daily_hours, review_points),
+                    "focus_blocks": focus_blocks,
                 }
             )
         return tasks
@@ -463,6 +488,8 @@ class PlannerService:
             "weekly_goals": self._build_weekly_goals(start, days, subjects, weak_points_by_subject, high_freq_by_subject),
             "daily_template": self._build_focus_blocks(daily_hours, all_weak_points[:2] or all_high_freq[:2]),
             "milestones": self._build_milestones(start, days),
+            "mock_exams": self._build_mock_exam_schedule(start, days, subjects),
+            "sprint_plan": self._build_sprint_plan(start, days, all_weak_points, all_high_freq),
             "review_schedule": self._build_review_schedule(start, all_high_freq[:8], due_reviews_by_date),
             "resource_strategy": self._build_resource_strategy(),
             "risk_alerts": self._build_risk_alerts(days, daily_hours, all_weak_points),
@@ -537,6 +564,67 @@ class PlannerService:
         ]
 
     @staticmethod
+    def _is_mock_exam_day(offset: int, days: int) -> bool:
+        if days < 7:
+            return offset == days - 1
+        if offset >= max(0, days - 14) and offset % 3 == 0:
+            return True
+        return (offset + 1) % 7 == 0 and offset >= max(0, int(days * 0.35))
+
+    @staticmethod
+    def _build_mock_exam_schedule(start: datetime, days: int, subjects: List[int]) -> List[Dict[str, Any]]:
+        schedule: List[Dict[str, Any]] = []
+        if not subjects:
+            return schedule
+        for offset in range(min(days, 60)):
+            if not PlannerService._is_mock_exam_day(offset, days):
+                continue
+            subject_id = subjects[len(schedule) % len(subjects)]
+            schedule.append(
+                {
+                    "date": (start + timedelta(days=offset)).date().isoformat(),
+                    "subject_id": subject_id,
+                    "title": "限时全真模考",
+                    "duration_minutes": 150,
+                    "review_focus": ["时间分配", "错题归因", "主观题表达完整度"],
+                }
+            )
+        return schedule
+
+    @staticmethod
+    def _build_sprint_plan(
+        start: datetime,
+        days: int,
+        weak_points: List[Dict[str, Any]],
+        high_freq_points: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        sprint_start = start + timedelta(days=max(0, days - 7))
+        focus_points = weak_points[:4] or high_freq_points[:4]
+        daily_actions = [
+            "压缩高频概念清单，保留必须背诵和易混淆条目",
+            "重做错题和同类题，记录仍未稳定掌握的考点",
+            "完成一套限时卷，复盘时间分配和失分题型",
+            "主观题模板演练，按评分点补齐概念、依据和结论",
+            "高频考点快速回看，减少新内容摄入",
+            "错题本最后一轮归因，确认下次复习时间",
+            "轻量回顾，保持作息和考试节奏",
+        ]
+        return [
+            {
+                "date": (sprint_start + timedelta(days=index)).date().isoformat(),
+                "day": index + 1,
+                "action": action,
+                "focus_points": [
+                    {"id": point.get("point_id") or point.get("id"), "name": point.get("name")}
+                    for point in focus_points[index % len(focus_points) : index % len(focus_points) + 1]
+                ]
+                if focus_points
+                else [],
+            }
+            for index, action in enumerate(daily_actions[: min(7, max(days, 1))])
+        ]
+
+    @staticmethod
     def _build_focus_blocks(daily_hours: float, review_points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         core_minutes = int(max(20, daily_hours * 60 * 0.45))
         practice_minutes = int(max(20, daily_hours * 60 * 0.35))
@@ -546,6 +634,29 @@ class PlannerService:
             {"name": "概念精读", "minutes": core_minutes, "content": f"精读并复述：{focus_names}"},
             {"name": "题目训练", "minutes": practice_minutes, "content": "完成客观题训练并记录错因"},
             {"name": "错题复盘", "minutes": review_minutes, "content": "按概念不清、审题偏差、表达缺项三类整理"},
+        ]
+
+    @staticmethod
+    def _build_mock_focus_blocks(daily_hours: float) -> List[Dict[str, Any]]:
+        total_minutes = int(max(90, daily_hours * 60))
+        exam_minutes = min(150, int(total_minutes * 0.65))
+        review_minutes = max(30, total_minutes - exam_minutes)
+        return [
+            {"name": "限时模考", "minutes": exam_minutes, "content": "按正式考试时间和题序完成整卷"},
+            {"name": "错题归因", "minutes": review_minutes, "content": "按章节、题型、审题和表达缺项归类复盘"},
+        ]
+
+    @staticmethod
+    def _build_sprint_focus_blocks(daily_hours: float, review_points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        total_minutes = int(max(60, daily_hours * 60))
+        checklist_minutes = int(total_minutes * 0.35)
+        drill_minutes = int(total_minutes * 0.4)
+        review_minutes = max(20, total_minutes - checklist_minutes - drill_minutes)
+        focus_names = "、".join(point.get("name", "") for point in review_points[:2] if point.get("name")) or "高频考点"
+        return [
+            {"name": "冲刺清单", "minutes": checklist_minutes, "content": f"快速回看：{focus_names}"},
+            {"name": "限时刷题", "minutes": drill_minutes, "content": "只做高频题、错题和主观题模板题"},
+            {"name": "考前复盘", "minutes": review_minutes, "content": "压缩记忆负担，确认易错点和答题节奏"},
         ]
 
     @staticmethod

@@ -82,6 +82,8 @@ const ExamPage: React.FC = () => {
   const [paper, setPaper] = useState<GeneratedPaper | null>(null)
   const [session, setSession] = useState<ExamSession | null>(null)
   const [answers, setAnswers] = useState<Record<number, string>>({})
+  const [flaggedQuestions, setFlaggedQuestions] = useState<number[]>([])
+  const [autoSubmitted, setAutoSubmitted] = useState(false)
   const [scoreResult, setScoreResult] = useState<ScoreResult | null>(null)
   const [history, setHistory] = useState<ExamHistoryItem[]>([])
   const [now, setNow] = useState(Date.now())
@@ -95,6 +97,7 @@ const ExamPage: React.FC = () => {
   )
   const selectedSubject = subjects.find((subject) => String(subject.id) === selectedSubjectId)
   const answeredCount = paper?.questions.filter((question) => answers[question.id]?.trim()).length || 0
+  const flaggedCount = flaggedQuestions.length
   const remainingSeconds = session ? Math.floor((new Date(session.end_time).getTime() - now) / 1000) : 0
 
   const updateQuestionTypeRatio = (questionType: string, value: number) => {
@@ -163,6 +166,13 @@ const ExamPage: React.FC = () => {
     return () => window.clearInterval(timer)
   }, [session, scoreResult])
 
+  useEffect(() => {
+    if (!session || scoreResult || autoSubmitted || loading || remainingSeconds > 0) return
+    setAutoSubmitted(true)
+    setMessage('考试时间已到，系统正在自动交卷。')
+    void submitPaper()
+  }, [session, scoreResult, autoSubmitted, loading, remainingSeconds])
+
   const generateAndStart = async (event: FormEvent) => {
     event.preventDefault()
     setError('')
@@ -183,6 +193,9 @@ const ExamPage: React.FC = () => {
         duration: selectedSubject?.exam_duration || 120,
         online_fallback: onlineFallback,
         save_online_questions: saveOnlineQuestions,
+        user_id: sessionStore.getUserId(),
+        avoid_recent_done: true,
+        recent_done_years: 3,
       }
       if (examMode !== 'wrong_questions') config.year = Number(year)
       if (examMode === 'wrong_questions') config.user_id = sessionStore.getUserId()
@@ -208,6 +221,8 @@ const ExamPage: React.FC = () => {
       })
       setPaper(generatedPaper)
       setAnswers({})
+      setFlaggedQuestions([])
+      setAutoSubmitted(false)
       setMessage(generatedPaper.message || '')
 
       if (!generatedPaper.exam_id) {
@@ -275,6 +290,8 @@ const ExamPage: React.FC = () => {
     setPaper(null)
     setSession(null)
     setAnswers({})
+    setFlaggedQuestions([])
+    setAutoSubmitted(false)
     setScoreResult(null)
     setMessage('')
   }
@@ -285,6 +302,21 @@ const ExamPage: React.FC = () => {
         ? current.filter((item) => item !== chapterId)
         : [...current, chapterId],
     )
+  }
+
+  const toggleQuestionFlag = (questionId: number) => {
+    setFlaggedQuestions((current) =>
+      current.includes(questionId)
+        ? current.filter((item) => item !== questionId)
+        : [...current, questionId],
+    )
+  }
+
+  const scrollToQuestion = (questionId: number) => {
+    document.getElementById(`question-${questionId}`)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
   }
 
   const renderQuestionInput = (question: Question) => {
@@ -662,18 +694,66 @@ const ExamPage: React.FC = () => {
               </div>
               <div className="text-sm text-gray-600">
                 已答 {answeredCount} / {paper.question_count}
+                {flaggedCount ? ` · 标记 ${flaggedCount}` : ''}
               </div>
             </div>
           </div>
 
+          <div className="sticky top-4 z-10 rounded-lg border border-slate-200 bg-white p-4 shadow">
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="font-medium text-slate-900">答题卡</div>
+              <div className="flex flex-wrap gap-3 text-xs text-slate-500">
+                <span>白色未答</span>
+                <span>蓝色已答</span>
+                <span>黄色已标记</span>
+                {paper.constraint_report?.recent_done_excluded_count ? (
+                  <span>已避开近 3 年做过题 {paper.constraint_report.recent_done_excluded_count} 道</span>
+                ) : null}
+              </div>
+            </div>
+            <div className="grid grid-cols-8 gap-2 sm:grid-cols-10 md:grid-cols-12">
+              {paper.questions.map((question, index) => {
+                const answered = Boolean(answers[question.id]?.trim())
+                const flagged = flaggedQuestions.includes(question.id)
+                return (
+                  <button
+                    key={question.id}
+                    type="button"
+                    onClick={() => scrollToQuestion(question.id)}
+                    className={`h-9 rounded border text-sm font-medium transition ${
+                      flagged
+                        ? 'border-amber-300 bg-amber-100 text-amber-800'
+                        : answered
+                          ? 'border-blue-300 bg-blue-100 text-blue-800'
+                          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {index + 1}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
           {paper.questions.map((question, index) => (
-            <div key={question.id} className="bg-white rounded-lg shadow p-6">
+            <div key={question.id} id={`question-${question.id}`} className="scroll-mt-28 bg-white rounded-lg shadow p-6">
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 <span className="rounded bg-gray-100 px-2 py-1 text-sm text-gray-700">第 {index + 1} 题</span>
                 <span className="rounded bg-blue-100 px-2 py-1 text-sm text-blue-700">
                   {questionTypeLabels[question.question_type] || question.question_type}
                 </span>
                 <span className="rounded bg-green-100 px-2 py-1 text-sm text-green-700">{question.score} 分</span>
+                <button
+                  type="button"
+                  onClick={() => toggleQuestionFlag(question.id)}
+                  className={`rounded px-2 py-1 text-sm ${
+                    flaggedQuestions.includes(question.id)
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {flaggedQuestions.includes(question.id) ? '取消标记' : '标记跳过'}
+                </button>
               </div>
               <div className="mb-4 whitespace-pre-wrap text-gray-900">{question.content}</div>
               {renderQuestionInput(question)}

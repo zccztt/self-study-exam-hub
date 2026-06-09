@@ -39,6 +39,15 @@ async def get_word_cloud(subject_id: int, db: Session = Depends(get_db)):
     return {"code": 0, "data": AnalysisService(db).get_word_cloud_data(subject_id)}
 
 
+@router.get("/knowledge-network/{subject_id}")
+async def get_knowledge_network(
+    subject_id: int,
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    return {"code": 0, "data": AnalysisService(db).get_knowledge_network(subject_id, limit)}
+
+
 @router.get("/chapter-heatmap/{subject_id}")
 async def get_chapter_heatmap(subject_id: int, db: Session = Depends(get_db)):
     return {"code": 0, "data": AnalysisService(db).get_chapter_heatmap(subject_id)}
@@ -52,3 +61,8 @@ async def get_question_type_distribution(subject_id: int, db: Session = Depends(
 @router.get("/prediction/{subject_id}")
 async def predict_next_exam(subject_id: int, db: Session = Depends(get_db)):
     return {"code": 0, "data": AnalysisService(db).predict_next_exam(subject_id)}
+
+
+@router.get("/hotspots/{subject_id}")
+async def get_hotspot_alerts(subject_id: int, db: Session = Depends(get_db)):
+    return {"code": 0, "data": AnalysisService(db).get_hotspot_alerts(subject_id)}

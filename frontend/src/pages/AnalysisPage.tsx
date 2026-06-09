@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react'
 import {
   analysisApi,
   ChapterHeatmap,
+  HotspotAlert,
   HighFrequencyPoint,
+  KnowledgeNetwork,
   KnowledgeTree,
   PointTrend,
   QuestionTypeDistribution,
@@ -28,6 +30,8 @@ const AnalysisPage: React.FC = () => {
   const [chapterHeatmap, setChapterHeatmap] = useState<ChapterHeatmap | null>(null)
   const [typeDistribution, setTypeDistribution] = useState<QuestionTypeDistribution | null>(null)
   const [wordCloud, setWordCloud] = useState<WordCloudItem[]>([])
+  const [knowledgeNetwork, setKnowledgeNetwork] = useState<KnowledgeNetwork | null>(null)
+  const [hotspots, setHotspots] = useState<HotspotAlert[]>([])
   const [prediction, setPrediction] = useState<HighFrequencyPoint[]>([])
   const [selectedPoint, setSelectedPoint] = useState<HighFrequencyPoint | null>(null)
   const [pointTrend, setPointTrend] = useState<PointTrend | null>(null)
@@ -39,20 +43,33 @@ const AnalysisPage: React.FC = () => {
     setLoading(true)
     setError('')
     try {
-      const [treeData, highFrequencyData, heatmapData, typeData, wordCloudData, predictionData] =
+      const [
+        treeData,
+        highFrequencyData,
+        heatmapData,
+        typeData,
+        wordCloudData,
+        networkData,
+        predictionData,
+        hotspotData,
+      ] =
         await Promise.all([
           analysisApi.getKnowledgeTree(nextSubjectId),
           analysisApi.getHighFrequencyPoints(nextSubjectId, 20),
           analysisApi.getChapterHeatmap(nextSubjectId),
           analysisApi.getQuestionTypeDistribution(nextSubjectId),
           analysisApi.getWordCloud(nextSubjectId),
+          analysisApi.getKnowledgeNetwork(nextSubjectId, 30),
           analysisApi.predictNextExam(nextSubjectId),
+          analysisApi.getHotspots(nextSubjectId),
         ])
       setKnowledgeTree(treeData)
       setHighFrequencyPoints(highFrequencyData)
       setChapterHeatmap(heatmapData)
       setTypeDistribution(typeData)
       setWordCloud(wordCloudData)
+      setKnowledgeNetwork(networkData)
+      setHotspots(hotspotData)
       setPrediction(predictionData)
       setSelectedPoint(highFrequencyData[0] || null)
       if (highFrequencyData[0]) {
@@ -88,6 +105,7 @@ const AnalysisPage: React.FC = () => {
   const maxChapterFrequency = Math.max(1, ...(chapterHeatmap?.chapters || []).map((chapter) => chapter.frequency))
   const maxWordWeight = Math.max(1, ...wordCloud.map((item) => item.weight))
   const maxTrendCount = Math.max(1, ...(pointTrend?.values || []).map((item) => item.count))
+  const maxEdgeWeight = Math.max(1, ...(knowledgeNetwork?.edges || []).map((item) => item.weight))
   const selectedDetail = selectedPoint?.detail
 
   const selectPoint = async (point: HighFrequencyPoint) => {
@@ -330,6 +348,66 @@ const AnalysisPage: React.FC = () => {
               </span>
             ))}
             {wordCloud.length === 0 && <div className="text-gray-500">暂无词云数据</div>}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold mb-4">知识点关联网络</h2>
+          <div className="mb-4 flex flex-wrap gap-2">
+            {(knowledgeNetwork?.nodes || []).slice(0, 12).map((node) => (
+              <span key={node.id} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700">
+                {node.name} · {node.frequency}
+              </span>
+            ))}
+          </div>
+          <div className="space-y-3">
+            {(knowledgeNetwork?.edges || []).slice(0, 8).map((edge) => (
+              <div key={`${edge.source}-${edge.target}`} className="rounded-lg border border-slate-200 px-4 py-3">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="font-medium text-slate-800">
+                    {edge.source_name || `考点 ${edge.source}`} ↔ {edge.target_name || `考点 ${edge.target}`}
+                  </span>
+                  <span className="text-slate-500">共现 {edge.weight}</span>
+                </div>
+                <div className="mt-2 h-2 rounded-full bg-slate-100">
+                  <div
+                    className="h-2 rounded-full bg-indigo-500"
+                    style={{ width: `${Math.max(8, (edge.weight / maxEdgeWeight) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+            {knowledgeNetwork?.edges.length === 0 && <div className="text-gray-500">暂无知识点共现关系</div>}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold mb-4">新增热点预警</h2>
+          <div className="space-y-3">
+            {hotspots.map((alert) => (
+              <div
+                key={alert.point_id}
+                className={`rounded-lg border px-4 py-3 ${
+                  alert.severity === 'high'
+                    ? 'border-red-200 bg-red-50'
+                    : 'border-amber-200 bg-amber-50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="font-medium text-slate-950">{alert.name}</div>
+                  <span className="rounded-full bg-white px-2 py-1 text-xs text-slate-600">
+                    {Math.round(alert.confidence * 100)}%
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {alert.chapter_name || '综合考点'} · 趋势斜率 {alert.trend_slope}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-slate-700">{alert.message}</p>
+              </div>
+            ))}
+            {hotspots.length === 0 && <div className="text-gray-500">暂无热点预警</div>}
           </div>
         </div>
       </div>

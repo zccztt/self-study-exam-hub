@@ -1,10 +1,18 @@
 # -*- coding: utf-8 -*-
 """Algorithm-level tests for paper generation, analytics, and planning."""
 
+from datetime import datetime
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from backend.models import Base
+from backend.models.exam import Exam, ExamSession, ExamStatus
 from backend.models.question import Difficulty, Question, QuestionType
 from backend.services.analysis_service import AnalysisService
 from backend.services.exam_engine import ExamEngine
 from backend.services.planner_service import PlannerService
+from scripts.parse_paper import parse_paper_text
 
 
 def _question(
@@ -77,6 +85,42 @@ def test_constraint_greedy_paper_generation_satisfies_feasible_targets() -> None
     assert report["satisfied"] is True
 
 
+def test_recent_done_question_ids_reads_completed_exam_history() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        exam = Exam(
+            subject_id=1,
+            name="历史试卷",
+            mode="random",
+            question_ids=[11, 12, 13],
+            total_score=6,
+            duration=120,
+        )
+        db.add(exam)
+        db.flush()
+        db.add(
+            ExamSession(
+                session_id="session-1",
+                user_id=1,
+                exam_id=exam.id,
+                status=ExamStatus.COMPLETED.value,
+                answers={},
+                start_time=datetime.now(),
+                submitted_at=datetime.now(),
+            )
+        )
+        db.commit()
+
+        service = ExamEngine(db)
+        assert service._recent_done_question_ids(1, {"user_id": 1}) == {11, 12, 13}
+        assert service._recent_done_question_ids(2, {"user_id": 1}) == set()
+    finally:
+        db.close()
+
+
 def test_linear_regression_trend_slope_detects_direction() -> None:
     assert AnalysisService._linear_regression_slope([1, 2, 3, 5]) > 0.3
     assert AnalysisService._linear_regression_slope([5, 3, 2, 1]) < -0.3
@@ -93,3 +137,29 @@ def test_review_point_merge_deduplicates_due_and_focus_points() -> None:
         {"id": 1, "name": "A", "chapter_id": None, "mastery_level": None, "review_type": "due"},
         {"id": 2, "name": "B", "chapter_id": None, "mastery_level": None, "review_type": "focus"},
     ]
+
+
+def test_parse_paper_text_extracts_choice_question() -> None:
+    parsed = parse_paper_text(
+        """
+        1. 马克思主义鲜明特征包括哪一项？
+        A. 科学性
+        B. 随意性
+        C. 片面性
+        D. 偶然性
+        答案：A
+        解析：马克思主义具有科学性和实践性。
+        """,
+        subject_code="03709",
+        subject_name="马克思主义基本原理概论",
+        year=2024,
+        month=10,
+        source="测试真题",
+        default_difficulty="medium",
+    )
+
+    assert len(parsed) == 1
+    assert parsed[0]["question_type"] == QuestionType.SINGLE_CHOICE.value
+    assert parsed[0]["options"] == ["科学性", "随意性", "片面性", "偶然性"]
+    assert parsed[0]["answer"] == "A"
+    assert parsed[0]["review_status"] == "pending"

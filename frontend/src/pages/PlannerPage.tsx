@@ -159,6 +159,8 @@ const PlannerPage: React.FC = () => {
   const weeklyGoals = currentPlan?.plan_data.weekly_goals || []
   const dailyTemplate = currentPlan?.plan_data.daily_template || []
   const milestones = currentPlan?.plan_data.milestones || []
+  const mockExams = currentPlan?.plan_data.mock_exams || []
+  const sprintPlan = currentPlan?.plan_data.sprint_plan || []
   const reviewSchedule = currentPlan?.plan_data.review_schedule || []
   const riskAlerts = currentPlan?.plan_data.risk_alerts || []
   const resourceStrategy = currentPlan?.plan_data.resource_strategy || []
@@ -368,6 +370,56 @@ const PlannerPage: React.FC = () => {
                   <div className="mt-1 text-sm text-slate-600">{item.check}</div>
                 </div>
               ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">模考节点</h2>
+            <div className="mt-4 space-y-3">
+              {mockExams.slice(0, 6).map((item) => (
+                <div key={`${item.date}-${item.subject_id}`} className="rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-medium text-indigo-950">{item.title}</div>
+                    <span className="text-xs text-indigo-700">{formatDate(item.date)}</span>
+                  </div>
+                  <div className="mt-1 text-sm text-indigo-700">
+                    {subjectNameById.get(item.subject_id) || `科目 ${item.subject_id}`} · {item.duration_minutes} 分钟
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {item.review_focus.map((focus) => (
+                      <span key={`${item.date}-${focus}`} className="rounded-full bg-white px-2 py-1 text-xs text-slate-700">
+                        {focus}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {mockExams.length === 0 && <div className="text-sm text-slate-500">生成学习计划后展示模考节点</div>}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">冲刺周安排</h2>
+            <div className="mt-4 space-y-3">
+              {sprintPlan.map((item) => (
+                <div key={`${item.date}-${item.day}`} className="rounded-lg border border-red-100 bg-red-50 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-medium text-red-950">Day {item.day}</div>
+                    <span className="text-xs text-red-700">{formatDate(item.date)}</span>
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-red-800">{item.action}</p>
+                  {item.focus_points.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {item.focus_points.map((point, index) => (
+                        <span key={`${item.date}-${point.name || index}`} className="rounded-full bg-white px-2 py-1 text-xs text-slate-700">
+                          {point.name || `考点 ${index + 1}`}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {sprintPlan.length === 0 && <div className="text-sm text-slate-500">生成学习计划后展示冲刺周安排</div>}
             </div>
           </section>
 

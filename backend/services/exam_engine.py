@@ -122,11 +122,26 @@ class ExamEngine:
 
         matched_questions = query.order_by(Question.year.desc().nullslast(), Question.id.asc()).all()
         available_count = len(matched_questions)
+        recent_done_ids = self._recent_done_question_ids(subject_id, config)
+        dedupe_relaxed = False
+        if recent_done_ids and mode != ExamMode.WRONG_QUESTIONS.value:
+            deduped_questions = [question for question in matched_questions if question.id not in recent_done_ids]
+            if deduped_questions:
+                matched_questions = deduped_questions
+            else:
+                dedupe_relaxed = True
+
         questions, constraint_report = self._select_questions_with_constraints(
             matched_questions,
             requested_limit,
             config,
         )
+        constraint_report["recent_done_excluded_count"] = (
+            len(recent_done_ids) if recent_done_ids and not dedupe_relaxed else 0
+        )
+        if dedupe_relaxed:
+            constraint_report.setdefault("relaxed", []).append("近 3 年已做题去重后无可用题，已放宽去重约束。")
+            constraint_report["satisfied"] = False
         shortage_message = (
             f"题库当前仅匹配 {available_count} 道题，已按实际可用数量生成。"
             if available_count < requested_limit
@@ -204,6 +219,47 @@ class ExamEngine:
             "message": shortage_message,
             "constraint_report": constraint_report,
         }
+
+    def _recent_done_question_ids(self, subject_id: int, config: Dict[str, Any]) -> Set[int]:
+        if not config.get("avoid_recent_done", config.get("avoidRecentDone", True)):
+            return set()
+        user_id = config.get("user_id")
+        if not user_id:
+            return set()
+        try:
+            parsed_user_id = int(user_id)
+        except (TypeError, ValueError):
+            return set()
+
+        lookback_years = self._normalize_positive_int(
+            config.get("recent_done_years", config.get("recentDoneYears", 3)),
+            default=3,
+            maximum=10,
+        )
+        cutoff_time = datetime.now() - timedelta(days=365 * lookback_years)
+        sessions = (
+            self.db.query(ExamSession, Exam)
+            .join(Exam, ExamSession.exam_id == Exam.id)
+            .filter(
+                ExamSession.user_id == parsed_user_id,
+                Exam.subject_id == subject_id,
+                ExamSession.status == ExamStatus.COMPLETED.value,
+                or_(
+                    ExamSession.submitted_at >= cutoff_time,
+                    and_(ExamSession.submitted_at.is_(None), ExamSession.start_time >= cutoff_time),
+                ),
+            )
+            .all()
+        )
+
+        question_ids: Set[int] = set()
+        for _, exam in sessions:
+            for question_id in exam.question_ids or []:
+                try:
+                    question_ids.add(int(question_id))
+                except (TypeError, ValueError):
+                    continue
+        return question_ids
 
     def _select_questions_with_constraints(
         self,

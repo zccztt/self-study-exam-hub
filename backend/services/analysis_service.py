@@ -194,6 +194,74 @@ class AnalysisService:
             "next_year_prediction": next_year_prediction,
         }
 
+    def get_knowledge_network(self, subject_id: int, limit: int = 30) -> Dict[str, Any]:
+        high_points = self.get_high_frequency_points(subject_id, limit=limit)
+        top_ids = {int(point["id"]) for point in high_points}
+        if not top_ids:
+            return {"subject_id": subject_id, "nodes": [], "edges": []}
+
+        rows = (
+            self.db.query(
+                QuestionKnowledgePoint.question_id,
+                KnowledgePoint.id,
+                KnowledgePoint.name,
+                KnowledgePoint.frequency,
+                Chapter.name,
+            )
+            .join(KnowledgePoint, QuestionKnowledgePoint.knowledge_point_id == KnowledgePoint.id)
+            .join(Chapter, KnowledgePoint.chapter_id == Chapter.id)
+            .join(Question, QuestionKnowledgePoint.question_id == Question.id)
+            .filter(Question.subject_id == subject_id, Chapter.subject_id == subject_id)
+            .all()
+        )
+
+        points_by_question: Dict[int, List[int]] = defaultdict(list)
+        node_meta: Dict[int, Dict[str, Any]] = {}
+        for question_id, point_id, point_name, frequency, chapter_name in rows:
+            point_id = int(point_id)
+            if point_id not in top_ids:
+                continue
+            points_by_question[int(question_id)].append(point_id)
+            node_meta[point_id] = {
+                "id": point_id,
+                "name": point_name,
+                "chapter_name": chapter_name,
+                "frequency": frequency or 0,
+            }
+
+        edge_counts: Counter[tuple[int, int]] = Counter()
+        for point_ids in points_by_question.values():
+            unique_ids = sorted(set(point_ids))
+            for index, source in enumerate(unique_ids):
+                for target in unique_ids[index + 1 :]:
+                    edge_counts[(source, target)] += 1
+
+        point_lookup = {int(point["id"]): point for point in high_points}
+        nodes = [
+            {
+                **node_meta.get(point_id, {"id": point_id, "name": point_lookup[point_id]["name"]}),
+                "frequency": point_lookup[point_id]["frequency"],
+                "trend": point_lookup[point_id].get("trend"),
+                "importance": point_lookup[point_id].get("importance"),
+                "question_count": point_lookup[point_id].get("question_count", 0),
+            }
+            for point_id in top_ids
+            if point_id in point_lookup
+        ]
+        nodes.sort(key=lambda item: (item.get("frequency") or 0, item.get("question_count") or 0), reverse=True)
+
+        edges = [
+            {
+                "source": source,
+                "target": target,
+                "weight": weight,
+                "source_name": point_lookup.get(source, {}).get("name"),
+                "target_name": point_lookup.get(target, {}).get("name"),
+            }
+            for (source, target), weight in edge_counts.most_common(60)
+        ]
+        return {"subject_id": subject_id, "nodes": nodes, "edges": edges}
+
     def get_word_cloud_data(self, subject_id: int) -> List[Dict[str, Any]]:
         chapter_ids = [
             chapter_id
@@ -317,6 +385,37 @@ class AnalysisService:
             }
             for point in points
         ]
+
+    def get_hotspot_alerts(self, subject_id: int) -> List[Dict[str, Any]]:
+        predictions = self.predict_next_exam(subject_id)
+        alerts: List[Dict[str, Any]] = []
+        for point in predictions:
+            confidence = float(point.get("confidence") or 0)
+            trend_slope = float(point.get("trend_slope") or 0)
+            trend_up = point.get("trend") == "up"
+            if not trend_up and confidence < 0.72:
+                continue
+            severity = "high" if trend_up and confidence >= 0.78 else "medium"
+            priority_score = round(confidence * 0.7 + max(trend_slope, 0) * 0.1 + min(point["frequency"] / 20, 1) * 0.2, 2)
+            alerts.append(
+                {
+                    "point_id": point["id"],
+                    "name": point["name"],
+                    "chapter_name": point.get("chapter_name"),
+                    "severity": severity,
+                    "trend": point.get("trend"),
+                    "trend_slope": point.get("trend_slope", 0),
+                    "confidence": confidence,
+                    "priority_score": priority_score,
+                    "message": (
+                        f"{point['name']} 近期趋势上升，建议纳入本周复习重点。"
+                        if trend_up
+                        else f"{point['name']} 历史频次和关联题量较高，建议保持高优先级。"
+                    ),
+                }
+            )
+        alerts.sort(key=lambda item: (item["severity"] == "high", item["priority_score"]), reverse=True)
+        return alerts[:8]
 
     def _trend_label(self, subject_id: int, point_id: int) -> str:
         return self.get_point_trend(subject_id, point_id, years=5)["trend"]
