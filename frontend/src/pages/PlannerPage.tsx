@@ -159,6 +159,7 @@ const PlannerPage: React.FC = () => {
   const weeklyGoals = currentPlan?.plan_data.weekly_goals || []
   const dailyTemplate = currentPlan?.plan_data.daily_template || []
   const milestones = currentPlan?.plan_data.milestones || []
+  const reviewSchedule = currentPlan?.plan_data.review_schedule || []
   const riskAlerts = currentPlan?.plan_data.risk_alerts || []
   const resourceStrategy = currentPlan?.plan_data.resource_strategy || []
 
@@ -367,6 +368,26 @@ const PlannerPage: React.FC = () => {
                   <div className="mt-1 text-sm text-slate-600">{item.check}</div>
                 </div>
               ))}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-xl font-semibold">间隔复习排期</h2>
+            <p className="mt-1 text-sm text-slate-500">按 1、3、7、15、30 天复习节点回看高频考点。</p>
+            <div className="mt-4 space-y-3">
+              {reviewSchedule.map((item) => (
+                <div key={item.date} className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+                  <div className="text-sm font-semibold text-blue-700">{formatDate(item.date)}</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {(item.review_points || []).slice(0, 4).map((point, index) => (
+                      <span key={`${item.date}-${String(point.name || point.id || index)}`} className="rounded-full bg-white px-2 py-1 text-xs text-slate-700">
+                        {String(point.name || `考点 ${index + 1}`)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {reviewSchedule.length === 0 && <div className="text-sm text-slate-500">生成学习计划后展示复习节点</div>}
             </div>
           </section>
 

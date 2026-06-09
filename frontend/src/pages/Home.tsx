@@ -63,11 +63,11 @@ const Home: React.FC = () => {
               2026 自学考试备考工作台
             </div>
             <h1 className="max-w-3xl text-3xl font-bold leading-tight text-slate-950 sm:text-4xl">
-              从考试安排、考点分析到每日任务，形成完整备考闭环。
+              从题库检索、模拟考试到间隔复习，形成完整备考闭环。
             </h1>
             <p className="mt-4 max-w-3xl text-base leading-7 text-slate-600">
               当前演示库已内置 2026 公共课课程、公开官方入口、B站真实视频资源、高频考点详情和系统学习计划。
-              登录后可直接体验组卷、提交、错题归档和计划进度更新。
+              登录后可直接体验题库检索、组卷提交、错题归档、薄弱点识别和复习计划更新。
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <Link to="/planner" className="rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700">
@@ -107,8 +107,8 @@ const Home: React.FC = () => {
         {[
           ['考试窗口', '2026 年 4 月 / 10 月', '以各省教育考试院公告为准'],
           ['公共课代码', '15044 / 15043', '马原与中国近现代史纲要'],
-          ['学习闭环', '题库 → 考试 → 错题 → 规划', '自动沉淀薄弱点'],
-          ['数据来源', '官方入口 + 公开资源', '仅展示真实链接'],
+          ['学习闭环', '题库 → 考试 → 错题 → 规划', '沉淀掌握度与薄弱点'],
+          ['数据接入', '导入脚本 + 公开资源', '支持线上补充检索'],
         ].map(([label, value, desc]) => (
           <div key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="text-sm text-slate-500">{label}</div>
