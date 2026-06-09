@@ -10,6 +10,25 @@ export interface GeneratePaperParams {
   config?: Record<string, unknown>
 }
 
+export interface ConstraintReport {
+  algorithm: string
+  requested_count: number
+  target_count: number
+  selected_count: number
+  available_count: number
+  question_type_target: Record<string, number>
+  question_type_actual: Record<string, number>
+  difficulty_target: Record<string, number>
+  difficulty_actual: Record<string, number>
+  chapter_coverage_target_count: number
+  chapter_coverage_actual_count: number
+  chapter_coverage_actual: number
+  covered_chapter_ids: number[]
+  target_chapter_ids: number[]
+  satisfied: boolean
+  relaxed: string[]
+}
+
 export interface GeneratedPaper {
   exam_id: number | null
   subject_id: number
@@ -24,6 +43,7 @@ export interface GeneratedPaper {
   question_count: number
   questions: Question[]
   message?: string | null
+  constraint_report?: ConstraintReport
 }
 
 export interface ExamSession {

@@ -20,6 +20,27 @@ const questionTypeLabels: Record<string, string> = {
   case: '案例题',
 }
 
+const difficultyLabels: Record<string, string> = {
+  easy: '易',
+  medium: '中',
+  hard: '难',
+}
+
+const defaultQuestionTypeRatio: Record<string, number> = {
+  single_choice: 40,
+  multiple_choice: 20,
+  fill_blank: 15,
+  short_answer: 15,
+  essay: 5,
+  case: 5,
+}
+
+const defaultDifficultyRatio: Record<string, number> = {
+  easy: 30,
+  medium: 50,
+  hard: 20,
+}
+
 const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F']
 const CURRENT_EXAM_YEAR = new Date().getFullYear()
 const YEAR_OPTIONS = Array.from({ length: 12 }, (_, index) => CURRENT_EXAM_YEAR - index)
@@ -36,6 +57,14 @@ const normalizeQuestionLimit = (value: number) => {
   return Math.max(1, Math.min(100, parsed))
 }
 
+const normalizeRatioValue = (value: number) => {
+  const parsed = Number.isFinite(value) ? Math.round(value) : 0
+  return Math.max(0, Math.min(100, parsed))
+}
+
+const buildRatioPayload = (ratio: Record<string, number>) =>
+  Object.fromEntries(Object.entries(ratio).filter(([, value]) => value > 0))
+
 const ExamPage: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [selectedSubjectId, setSelectedSubjectId] = useState('')
@@ -44,6 +73,10 @@ const ExamPage: React.FC = () => {
   const [examMode, setExamMode] = useState<ExamMode>('real_exam')
   const [year, setYear] = useState(String(CURRENT_EXAM_YEAR))
   const [limit, setLimit] = useState(20)
+  const [smartConstraints, setSmartConstraints] = useState(true)
+  const [chapterCoverage, setChapterCoverage] = useState(80)
+  const [questionTypeRatio, setQuestionTypeRatio] = useState(defaultQuestionTypeRatio)
+  const [difficultyRatio, setDifficultyRatio] = useState(defaultDifficultyRatio)
   const [onlineFallback, setOnlineFallback] = useState(true)
   const [saveOnlineQuestions, setSaveOnlineQuestions] = useState(false)
   const [paper, setPaper] = useState<GeneratedPaper | null>(null)
@@ -63,6 +96,20 @@ const ExamPage: React.FC = () => {
   const selectedSubject = subjects.find((subject) => String(subject.id) === selectedSubjectId)
   const answeredCount = paper?.questions.filter((question) => answers[question.id]?.trim()).length || 0
   const remainingSeconds = session ? Math.floor((new Date(session.end_time).getTime() - now) / 1000) : 0
+
+  const updateQuestionTypeRatio = (questionType: string, value: number) => {
+    setQuestionTypeRatio((current) => ({
+      ...current,
+      [questionType]: normalizeRatioValue(value),
+    }))
+  }
+
+  const updateDifficultyRatio = (difficulty: string, value: number) => {
+    setDifficultyRatio((current) => ({
+      ...current,
+      [difficulty]: normalizeRatioValue(value),
+    }))
+  }
 
   const loadHistory = async () => {
     try {
@@ -145,6 +192,13 @@ const ExamPage: React.FC = () => {
           return
         }
         config.chapter_ids = selectedChapterIds
+      }
+      if (examMode !== 'wrong_questions' && smartConstraints) {
+        config.constraints = {
+          question_type_ratio: buildRatioPayload(questionTypeRatio),
+          difficulty_ratio: buildRatioPayload(difficultyRatio),
+          chapter_coverage: chapterCoverage / 100,
+        }
       }
 
       const generatedPaper = await examApi.generatePaper({
@@ -380,6 +434,85 @@ const ExamPage: React.FC = () => {
               </div>
             </div>
 
+            {examMode !== 'wrong_questions' && (
+              <div className="mb-6 space-y-4 border-y border-gray-100 py-4">
+                <label className="flex items-center gap-3 text-sm font-medium text-gray-800">
+                  <input
+                    type="checkbox"
+                    checked={smartConstraints}
+                    onChange={(event) => setSmartConstraints(event.target.checked)}
+                  />
+                  智能约束组卷
+                </label>
+
+                {smartConstraints && (
+                  <div className="space-y-4">
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">章节覆盖率</label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={5}
+                          value={chapterCoverage}
+                          onChange={(event) => setChapterCoverage(normalizeRatioValue(Number(event.target.value)))}
+                          className="flex-1"
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={chapterCoverage}
+                          onChange={(event) => setChapterCoverage(normalizeRatioValue(Number(event.target.value)))}
+                          className="w-20 rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                        />
+                        <span className="text-sm text-gray-600">%</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">难度配比</label>
+                      <div className="grid grid-cols-3 gap-3">
+                        {Object.keys(defaultDifficultyRatio).map((difficulty) => (
+                          <label key={difficulty} className="text-sm text-gray-600">
+                            <span className="mb-1 block">{difficultyLabels[difficulty]}</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={difficultyRatio[difficulty]}
+                              onChange={(event) => updateDifficultyRatio(difficulty, Number(event.target.value))}
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-sm font-medium text-gray-700">题型配比</label>
+                      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+                        {Object.keys(defaultQuestionTypeRatio).map((questionType) => (
+                          <label key={questionType} className="text-sm text-gray-600">
+                            <span className="mb-1 block">{questionTypeLabels[questionType]}</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={questionTypeRatio[questionType]}
+                              onChange={(event) => updateQuestionTypeRatio(questionType, Number(event.target.value))}
+                              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {examMode === 'chapter' && (
               <div className="mb-6">
                 <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -519,6 +652,13 @@ const ExamPage: React.FC = () => {
                   {paper.online_generated_count ? ` · 线上生成 ${paper.online_generated_count}题` : ''}
                   {paper.saved_online_question_count ? ` · 已入库 ${paper.saved_online_question_count}题` : ''}
                 </div>
+                {paper.constraint_report && (
+                  <div className="mt-2 text-xs text-gray-500">
+                    智能组卷 · 章节覆盖 {paper.constraint_report.chapter_coverage_actual_count}/
+                    {paper.constraint_report.chapter_coverage_target_count || paper.constraint_report.covered_chapter_ids.length}
+                    {paper.constraint_report.satisfied ? ' · 约束已满足' : ' · 已按题库可用范围放宽'}
+                  </div>
+                )}
               </div>
               <div className="text-sm text-gray-600">
                 已答 {answeredCount} / {paper.question_count}

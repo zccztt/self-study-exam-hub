@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Study plan service."""
 
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -38,13 +39,16 @@ class PlannerService:
             subject_id: AnalysisService(self.db).get_high_frequency_points(subject_id, limit=20)
             for subject_id in subjects
         }
+        due_reviews_by_date = self._due_reviews_by_date(user_id, subjects, today, days)
         tasks = self._build_daily_tasks(
+            user_id=user_id,
             subjects=subjects,
             start=today,
             days=days,
             daily_hours=daily_hours,
             weak_points_by_subject=weak_points_by_subject,
             high_freq_by_subject=high_freq_by_subject,
+            due_reviews_by_date=due_reviews_by_date,
         )
         allocation = self.allocate_time(
             days,
@@ -59,6 +63,7 @@ class PlannerService:
             daily_hours=daily_hours,
             weak_points_by_subject=weak_points_by_subject,
             high_freq_by_subject=high_freq_by_subject,
+            due_reviews_by_date=due_reviews_by_date,
         )
         expected_pass_rate = self._estimate_pass_rate(days, daily_hours, weak_points_by_subject)
 
@@ -111,7 +116,8 @@ class PlannerService:
             .all()
         )
         if mastery_rows:
-            return [
+            now = datetime.now()
+            weak_items = [
                 {
                     "point_id": point.id,
                     "name": point.name,
@@ -121,14 +127,26 @@ class PlannerService:
                     "correct_count": mastery.correct_count,
                     "wrong_count": mastery.wrong_count,
                     "next_review_time": mastery.next_review_time.isoformat() if mastery.next_review_time else None,
-                    "priority": "high" if mastery.mastery_level < 0.6 else "medium",
+                    "is_due": bool(mastery.next_review_time and mastery.next_review_time <= now),
+                    "priority": "high"
+                    if mastery.mastery_level < 0.6 or (mastery.next_review_time and mastery.next_review_time <= now)
+                    else "medium",
                     "reason": "掌握度低于 60%，优先安排概念重建和错题复盘"
                     if mastery.mastery_level < 0.6
                     else "掌握度未达稳定水平，安排间隔复习",
                 }
                 for mastery, point in mastery_rows
                 if mastery.mastery_level < 0.8
-            ][:10]
+            ]
+            weak_items.sort(
+                key=lambda item: (
+                    0 if item.get("priority") == "high" else 1,
+                    0 if item.get("is_due") else 1,
+                    item.get("mastery_level", 1),
+                    -int(item.get("wrong_count") or 0),
+                )
+            )
+            return weak_items[:10]
 
         wrong_rows = (
             self.db.query(KnowledgePoint, func.count(WrongQuestion.id).label("wrong_total"))
@@ -211,9 +229,84 @@ class PlannerService:
             schedule.append(
                 {
                     "date": (start_date + timedelta(days=interval)).date().isoformat(),
+                    "interval_days": interval,
+                    "review_type": "ebbinghaus",
                     "review_points": learned_points,
                 }
             )
+        return schedule
+
+    def _due_reviews_by_date(
+        self,
+        user_id: int,
+        subjects: List[int],
+        start: datetime,
+        days: int,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        if not subjects:
+            return {}
+
+        end = start + timedelta(days=max(0, min(days, 60) - 1))
+        rows = (
+            self.db.query(UserMastery, KnowledgePoint, Chapter)
+            .join(KnowledgePoint, UserMastery.knowledge_point_id == KnowledgePoint.id)
+            .join(Chapter, KnowledgePoint.chapter_id == Chapter.id)
+            .filter(
+                UserMastery.user_id == user_id,
+                Chapter.subject_id.in_(subjects),
+                UserMastery.next_review_time.isnot(None),
+                UserMastery.next_review_time <= end,
+            )
+            .all()
+        )
+
+        schedule: Dict[str, List[Dict[str, Any]]] = {}
+        for mastery, point, chapter in rows:
+            due_time = mastery.next_review_time or start
+            due_date = max(due_time.date(), start.date())
+            key = due_date.isoformat()
+            schedule.setdefault(key, []).append(
+                {
+                    "id": point.id,
+                    "point_id": point.id,
+                    "name": point.name,
+                    "chapter_id": point.chapter_id,
+                    "subject_id": chapter.subject_id,
+                    "mastery_level": mastery.mastery_level,
+                    "wrong_count": mastery.wrong_count,
+                    "next_review_time": due_time.isoformat(),
+                    "review_type": "due",
+                    "priority": "high" if mastery.mastery_level < 0.6 else "medium",
+                    "reason": "艾宾浩斯间隔复习到期",
+                }
+            )
+
+        for review_points in schedule.values():
+            review_points.sort(
+                key=lambda item: (
+                    0 if item.get("priority") == "high" else 1,
+                    item.get("mastery_level", 1),
+                    -int(item.get("wrong_count") or 0),
+                )
+            )
+        return schedule
+
+    def _build_review_schedule(
+        self,
+        start: datetime,
+        high_freq_points: List[Dict[str, Any]],
+        due_reviews_by_date: Dict[str, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        schedule = self.schedule_reviews(start, high_freq_points)
+        for date, review_points in due_reviews_by_date.items():
+            schedule.append(
+                {
+                    "date": date,
+                    "review_type": "mastery_due",
+                    "review_points": self._merge_review_points(review_points, limit=8),
+                }
+            )
+        schedule.sort(key=lambda item: item["date"])
         return schedule
 
     def update_progress(self, user_id: int, completed_tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -267,12 +360,14 @@ class PlannerService:
 
     def _build_daily_tasks(
         self,
+        user_id: int,
         subjects: List[int],
         start: datetime,
         days: int,
         daily_hours: float,
         weak_points_by_subject: Dict[int, List[Dict[str, Any]]],
         high_freq_by_subject: Dict[int, List[Dict[str, Any]]],
+        due_reviews_by_date: Dict[str, List[Dict[str, Any]]],
     ) -> List[Dict[str, Any]]:
         if not subjects:
             return []
@@ -287,7 +382,20 @@ class PlannerService:
             reverse=True,
         )
         for offset in range(min(days, 60)):
-            subject_id = priority_subjects[offset % len(priority_subjects)]
+            task_date = start + timedelta(days=offset)
+            date_key = task_date.date().isoformat()
+            due_reviews = due_reviews_by_date.get(date_key, [])
+            if due_reviews:
+                subject_counts = Counter(
+                    int(item["subject_id"]) for item in due_reviews if item.get("subject_id")
+                )
+                subject_id = subject_counts.most_common(1)[0][0] if subject_counts else priority_subjects[0]
+            else:
+                subject_id = priority_subjects[offset % len(priority_subjects)]
+
+            subject_due_reviews = [
+                item for item in due_reviews if int(item.get("subject_id") or 0) == int(subject_id)
+            ]
             target_point = self._select_target_point(
                 offset,
                 weak_points_by_subject.get(subject_id, []),
@@ -299,12 +407,19 @@ class PlannerService:
                 .order_by(Chapter.order.asc(), Chapter.id.asc())
                 .all()
             )
-            target_chapter_id = target_point.get("chapter_id") if target_point else None
+            target_chapter_id = (
+                subject_due_reviews[0].get("chapter_id")
+                if subject_due_reviews
+                else target_point.get("chapter_id") if target_point else None
+            )
             chapter = next((item for item in chapters if item.id == target_chapter_id), None)
             if not chapter:
                 chapter = chapters[offset % len(chapters)] if chapters else None
 
-            review_points = self._build_review_points(target_point)
+            review_points = self._merge_review_points(
+                subject_due_reviews,
+                self._build_review_points(target_point),
+            )
             if chapter and not review_points:
                 points = (
                     self.db.query(KnowledgePoint)
@@ -318,12 +433,12 @@ class PlannerService:
             chapter_ids = [chapter.id] if chapter else []
             tasks.append(
                 {
-                    "date": (start + timedelta(days=offset)).isoformat(),
+                    "date": task_date.isoformat(),
                     "subject_id": subject_id,
                     "chapter_ids": chapter_ids,
-                    "task_type": self._task_type(offset),
+                    "task_type": "间隔复习" if subject_due_reviews else self._task_type(offset),
                     "estimated_hours": daily_hours,
-                    "question_count": max(10, int(daily_hours * 12)),
+                    "question_count": max(10, int(daily_hours * (10 if subject_due_reviews else 12))),
                     "video_ids": self._recommend_video_ids(subject_id, chapter_ids),
                     "review_points": review_points,
                     "focus_blocks": self._build_focus_blocks(daily_hours, review_points),
@@ -339,6 +454,7 @@ class PlannerService:
         daily_hours: float,
         weak_points_by_subject: Dict[int, List[Dict[str, Any]]],
         high_freq_by_subject: Dict[int, List[Dict[str, Any]]],
+        due_reviews_by_date: Dict[str, List[Dict[str, Any]]],
     ) -> Dict[str, Any]:
         all_weak_points = [point for points in weak_points_by_subject.values() for point in points]
         all_high_freq = [point for points in high_freq_by_subject.values() for point in points]
@@ -347,7 +463,7 @@ class PlannerService:
             "weekly_goals": self._build_weekly_goals(start, days, subjects, weak_points_by_subject, high_freq_by_subject),
             "daily_template": self._build_focus_blocks(daily_hours, all_weak_points[:2] or all_high_freq[:2]),
             "milestones": self._build_milestones(start, days),
-            "review_schedule": self.schedule_reviews(start, all_high_freq[:8]),
+            "review_schedule": self._build_review_schedule(start, all_high_freq[:8], due_reviews_by_date),
             "resource_strategy": self._build_resource_strategy(),
             "risk_alerts": self._build_risk_alerts(days, daily_hours, all_weak_points),
         }
@@ -468,7 +584,15 @@ class PlannerService:
         candidates = weak_points or high_freq_points
         if not candidates:
             return None
-        return candidates[offset % len(candidates)]
+        ranked = sorted(
+            candidates,
+            key=lambda item: (
+                0 if item.get("priority") == "high" else 1,
+                item.get("mastery_level", 0.65),
+                -int(item.get("frequency") or 0),
+            ),
+        )
+        return ranked[offset % len(ranked)]
 
     @staticmethod
     def _task_type(offset: int) -> str:
@@ -489,6 +613,29 @@ class PlannerService:
         if not point_id:
             return []
         return [{"id": point_id, "name": target_point["name"]}]
+
+    @staticmethod
+    def _merge_review_points(*groups: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+        for group in groups:
+            for item in group:
+                point_id = item.get("point_id") or item.get("id")
+                if not point_id or point_id in seen:
+                    continue
+                seen.add(point_id)
+                merged.append(
+                    {
+                        "id": point_id,
+                        "name": item.get("name", ""),
+                        "chapter_id": item.get("chapter_id"),
+                        "mastery_level": item.get("mastery_level"),
+                        "review_type": item.get("review_type", "focus"),
+                    }
+                )
+                if len(merged) >= limit:
+                    return merged
+        return merged
 
     @staticmethod
     def _allocate_items(items: List[Dict[str, Any]], hours: float) -> List[Dict[str, Any]]:

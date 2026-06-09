@@ -128,20 +128,24 @@ class AnalysisService:
             .group_by(KnowledgePoint.id, Chapter.name)
             .all()
         )
-        items = [
-            {
-                "id": point.id,
-                "name": point.name,
-                "description": point.description,
-                "frequency": max(point.frequency or 0, linked_count or 0),
-                "importance": point.importance,
-                "chapter_name": chapter_name,
-                "question_count": linked_count,
-                "trend": self._trend_label(subject_id, point.id),
-                "detail": self._point_detail(point, chapter_name, linked_count),
-            }
-            for point, chapter_name, linked_count in rows
-        ]
+        items = []
+        for point, chapter_name, linked_count in rows:
+            trend_info = self.get_point_trend(subject_id, point.id, years=5)
+            items.append(
+                {
+                    "id": point.id,
+                    "name": point.name,
+                    "description": point.description,
+                    "frequency": max(point.frequency or 0, linked_count or 0),
+                    "importance": point.importance,
+                    "chapter_name": chapter_name,
+                    "question_count": linked_count,
+                    "trend": trend_info["trend"],
+                    "trend_slope": trend_info["trend_slope"],
+                    "next_year_prediction": trend_info["next_year_prediction"],
+                    "detail": self._point_detail(point, chapter_name, linked_count),
+                }
+            )
         items.sort(key=lambda item: (item["frequency"], item["question_count"], item["id"]), reverse=True)
         return items[:limit]
 
@@ -158,12 +162,37 @@ class AnalysisService:
             .order_by(Question.year.asc())
             .all()
         )
-        values = [{"year": year, "count": count} for year, count in rows[-years:]]
-        if not values:
+        values: List[Dict[str, Any]] = []
+        if rows:
+            year_counts = {int(year): int(count or 0) for year, count in rows}
+            end_year = max(year_counts)
+            start_year = max(min(year_counts), end_year - max(years, 1) + 1)
+            values = [
+                {"year": year, "count": year_counts.get(year, 0)}
+                for year in range(start_year, end_year + 1)
+            ][-years:]
+        else:
             point = self.db.query(KnowledgePoint).filter(KnowledgePoint.id == point_id).first()
             if point:
                 values = [{"year": datetime.now().year, "count": point.frequency or 0}]
-        return {"subject_id": subject_id, "point_id": point_id, "values": values}
+
+        counts = [int(item["count"]) for item in values]
+        slope = self._linear_regression_slope(counts)
+        if slope > 0.3:
+            trend = "up"
+        elif slope < -0.3:
+            trend = "down"
+        else:
+            trend = "stable"
+        next_year_prediction = max(0, round((counts[-1] if counts else 0) + slope, 2))
+        return {
+            "subject_id": subject_id,
+            "point_id": point_id,
+            "values": values,
+            "trend": trend,
+            "trend_slope": round(slope, 4),
+            "next_year_prediction": next_year_prediction,
+        }
 
     def get_word_cloud_data(self, subject_id: int) -> List[Dict[str, Any]]:
         chapter_ids = [
@@ -290,30 +319,42 @@ class AnalysisService:
         ]
 
     def _trend_label(self, subject_id: int, point_id: int) -> str:
-        values = self.get_point_trend(subject_id, point_id, years=5)["values"]
-        if len(values) < 2:
-            return "stable"
-        if values[-1]["count"] > values[0]["count"]:
-            return "up"
-        if values[-1]["count"] < values[0]["count"]:
-            return "down"
-        return "stable"
+        return self.get_point_trend(subject_id, point_id, years=5)["trend"]
 
     @staticmethod
     def _prediction_confidence(point: Dict[str, Any], max_frequency: int) -> float:
         frequency_score = (point["frequency"] / max(max_frequency, 1)) * 0.35
         importance_score = 0.15 if point.get("importance") == "high" else 0.08
-        trend_score = 0.1 if point.get("trend") == "up" else 0.04
+        trend_slope = max(float(point.get("trend_slope") or 0), 0.0)
+        trend_score = min(trend_slope / 3, 1) * 0.12 if point.get("trend") == "up" else 0.04
         linked_score = min((point.get("question_count") or 0) / 10, 1) * 0.15
         return round(min(0.95, 0.35 + frequency_score + importance_score + trend_score + linked_score), 2)
 
     @staticmethod
     def _prediction_reason(point: Dict[str, Any]) -> str:
-        trend_text = "近年出现频率有上升迹象" if point.get("trend") == "up" else "近年考查保持稳定"
+        if point.get("trend") == "up":
+            trend_text = f"近年趋势斜率 {point.get('trend_slope', 0)}，出现频率有上升迹象"
+        elif point.get("trend") == "down":
+            trend_text = f"近年趋势斜率 {point.get('trend_slope', 0)}，考查热度有所下降"
+        else:
+            trend_text = "近年考查保持稳定"
         return (
             f"该考点累计频次 {point['frequency']}，关联训练题 {point.get('question_count') or 0} 道，"
             f"{trend_text}。建议按“概念-原理-方法论-材料应用”四步复习。"
         )
+
+    @staticmethod
+    def _linear_regression_slope(counts: List[int]) -> float:
+        if len(counts) < 2:
+            return 0.0
+        x_values = list(range(len(counts)))
+        x_mean = sum(x_values) / len(x_values)
+        y_mean = sum(counts) / len(counts)
+        denominator = sum((x - x_mean) ** 2 for x in x_values)
+        if denominator == 0:
+            return 0.0
+        numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_values, counts))
+        return numerator / denominator
 
     def _point_linked_counts(self, point_ids: List[int]) -> Dict[int, int]:
         if not point_ids:

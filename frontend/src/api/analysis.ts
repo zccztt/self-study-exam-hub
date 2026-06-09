@@ -35,6 +35,8 @@ export interface KnowledgeTree {
 
 export interface HighFrequencyPoint extends KnowledgePoint {
   trend: 'up' | 'stable' | string
+  trend_slope?: number
+  next_year_prediction?: number
   chapter_name?: string
   question_count?: number
   confidence?: number
@@ -50,6 +52,9 @@ export interface PointTrend {
   subject_id: number
   point_id: number
   values: TrendPoint[]
+  trend?: 'up' | 'down' | 'stable' | string
+  trend_slope?: number
+  next_year_prediction?: number
 }
 
 export interface WordCloudItem {

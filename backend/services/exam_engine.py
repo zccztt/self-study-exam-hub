@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """Exam paper generation, session control, scoring, and wrong-book handling."""
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 import hashlib
 import json
+import math
 import random
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
@@ -65,6 +66,11 @@ class ExamEngine:
         QuestionType.ESSAY.value: 4,
         QuestionType.CASE.value: 5,
     }
+    DEFAULT_DIFFICULTY_RATIO = {
+        Difficulty.EASY.value: 0.3,
+        Difficulty.MEDIUM.value: 0.5,
+        Difficulty.HARD.value: 0.2,
+    }
 
     def __init__(
         self,
@@ -116,23 +122,35 @@ class ExamEngine:
 
         matched_questions = query.order_by(Question.year.desc().nullslast(), Question.id.asc()).all()
         available_count = len(matched_questions)
-        actual_limit = min(requested_limit, available_count)
-        questions = (
-            random.sample(matched_questions, actual_limit)
-            if available_count > actual_limit
-            else matched_questions
+        questions, constraint_report = self._select_questions_with_constraints(
+            matched_questions,
+            requested_limit,
+            config,
         )
         shortage_message = (
             f"题库当前仅匹配 {available_count} 道题，已按实际可用数量生成。"
             if available_count < requested_limit
             else None
         )
+        if constraint_report.get("relaxed"):
+            relaxed_message = "部分约束因题库分布不足已按最优组合放宽。"
+            shortage_message = f"{shortage_message} {relaxed_message}" if shortage_message else relaxed_message
         online_generated_count = 0
         saved_online_question_count = 0
 
         if not questions:
             online_result = self._build_online_questions(subject_id, mode, config, requested_limit)
             questions = online_result["questions"]
+            constraint_report = self._build_constraint_report(
+                selected_questions=questions,
+                available_questions=questions,
+                requested_limit=requested_limit,
+                target_count=len(questions),
+                type_targets={},
+                difficulty_targets={},
+                target_chapter_ids=set(),
+                relaxed=["本地题库无匹配题目，已使用线上题源生成。"] if questions else [],
+            )
             if not questions:
                 return {
                     "exam_id": None,
@@ -147,6 +165,7 @@ class ExamEngine:
                     "question_count": 0,
                     "questions": [],
                     "message": "没有匹配到本地题目，线上也暂未找到可生成试题的题源，请调整科目或关键词后重试。",
+                    "constraint_report": constraint_report,
                 }
             shortage_message = online_result["message"]
             online_generated_count = len(questions)
@@ -183,6 +202,463 @@ class ExamEngine:
             "question_count": len(questions),
             "questions": [self._serialize_exam_question(question, include_answer=False) for question in questions],
             "message": shortage_message,
+            "constraint_report": constraint_report,
+        }
+
+    def _select_questions_with_constraints(
+        self,
+        available_questions: List[Question],
+        requested_limit: int,
+        config: Dict[str, Any],
+    ) -> Tuple[List[Question], Dict[str, Any]]:
+        target_count = min(requested_limit, len(available_questions))
+        if target_count <= 0:
+            return [], self._build_constraint_report(
+                selected_questions=[],
+                available_questions=available_questions,
+                requested_limit=requested_limit,
+                target_count=0,
+                type_targets={},
+                difficulty_targets={},
+                target_chapter_ids=set(),
+                relaxed=[],
+            )
+
+        constraints = self._constraint_config(config)
+        type_capacities = Counter(question.question_type for question in available_questions)
+        difficulty_capacities = Counter(
+            question.difficulty or Difficulty.MEDIUM.value for question in available_questions
+        )
+        chapter_capacities = Counter(
+            question.chapter_id for question in available_questions if question.chapter_id is not None
+        )
+        type_targets = self._build_group_targets(
+            total=target_count,
+            capacities=dict(type_capacities),
+            count_map=self._constraint_number_map(
+                constraints,
+                ["question_type_counts", "questionTypeCounts", "type_counts"],
+            ),
+            ratio_map=self._constraint_number_map(
+                constraints,
+                [
+                    "question_type_ratio",
+                    "question_type_ratios",
+                    "question_type_distribution",
+                    "questionTypeRatio",
+                    "questionTypeRatios",
+                ],
+            ),
+            default_weights=dict(type_capacities),
+        )
+        difficulty_targets = self._build_group_targets(
+            total=target_count,
+            capacities=dict(difficulty_capacities),
+            count_map=self._constraint_number_map(
+                constraints,
+                ["difficulty_counts", "difficultyCounts"],
+            ),
+            ratio_map=self._constraint_number_map(
+                constraints,
+                [
+                    "difficulty_ratio",
+                    "difficulty_ratios",
+                    "difficulty_distribution",
+                    "difficultyRatio",
+                    "difficultyRatios",
+                ],
+            ),
+            default_weights=self.DEFAULT_DIFFICULTY_RATIO,
+        )
+        target_chapter_ids = self._target_chapter_ids(
+            config=constraints,
+            target_count=target_count,
+            chapter_capacities=chapter_capacities,
+        )
+
+        selected: List[Question] = []
+        selected_ids: Set[int] = set()
+        selected_types: Counter[str] = Counter()
+        selected_difficulties: Counter[str] = Counter()
+        selected_chapters: Counter[int] = Counter()
+        relaxed: List[str] = []
+        max_frequency = max([question.frequency or 0 for question in available_questions] or [1])
+        years = [question.year for question in available_questions if question.year]
+        min_year = min(years) if years else None
+        max_year = max(years) if years else None
+
+        while len(selected) < target_count:
+            remaining = [question for question in available_questions if question.id not in selected_ids]
+            if not remaining:
+                break
+
+            remaining_slots_after = target_count - len(selected) - 1
+            feasible = [
+                question
+                for question in remaining
+                if self._candidate_keeps_constraints(
+                    question=question,
+                    remaining_slots_after=remaining_slots_after,
+                    selected_types=selected_types,
+                    selected_difficulties=selected_difficulties,
+                    selected_chapters=selected_chapters,
+                    type_targets=type_targets,
+                    difficulty_targets=difficulty_targets,
+                    target_chapter_ids=target_chapter_ids,
+                )
+            ]
+            if not feasible:
+                feasible = remaining
+                if not relaxed:
+                    relaxed.append("题型、难度和章节覆盖约束存在组合冲突。")
+
+            chosen = max(
+                feasible,
+                key=lambda question: self._constraint_greedy_score(
+                    question=question,
+                    selected_types=selected_types,
+                    selected_difficulties=selected_difficulties,
+                    selected_chapters=selected_chapters,
+                    type_targets=type_targets,
+                    difficulty_targets=difficulty_targets,
+                    target_chapter_ids=target_chapter_ids,
+                    max_frequency=max_frequency,
+                    min_year=min_year,
+                    max_year=max_year,
+                ),
+            )
+            selected.append(chosen)
+            selected_ids.add(chosen.id)
+            selected_types[chosen.question_type] += 1
+            selected_difficulties[chosen.difficulty or Difficulty.MEDIUM.value] += 1
+            if chosen.chapter_id is not None:
+                selected_chapters[chosen.chapter_id] += 1
+
+        report = self._build_constraint_report(
+            selected_questions=selected,
+            available_questions=available_questions,
+            requested_limit=requested_limit,
+            target_count=target_count,
+            type_targets=type_targets,
+            difficulty_targets=difficulty_targets,
+            target_chapter_ids=target_chapter_ids,
+            relaxed=relaxed,
+        )
+        if not report["satisfied"] and not report["relaxed"]:
+            report["relaxed"].append("题库题目分布无法完全满足所有目标配比。")
+        return selected, report
+
+    @classmethod
+    def _constraint_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        constraints = dict(config)
+        nested = config.get("constraints")
+        if isinstance(nested, dict):
+            constraints.update(nested)
+        return constraints
+
+    @staticmethod
+    def _constraint_number_map(config: Dict[str, Any], keys: List[str]) -> Dict[str, float]:
+        for key in keys:
+            raw_value = config.get(key)
+            if not isinstance(raw_value, dict):
+                continue
+            parsed: Dict[str, float] = {}
+            for item_key, item_value in raw_value.items():
+                try:
+                    number = float(item_value)
+                except (TypeError, ValueError):
+                    continue
+                if number > 0:
+                    parsed[str(item_key)] = number
+            if parsed:
+                return parsed
+        return {}
+
+    @classmethod
+    def _build_group_targets(
+        cls,
+        *,
+        total: int,
+        capacities: Dict[str, int],
+        count_map: Dict[str, float],
+        ratio_map: Dict[str, float],
+        default_weights: Dict[str, float],
+    ) -> Dict[str, int]:
+        active_capacities = {
+            str(key): int(value)
+            for key, value in capacities.items()
+            if value and int(value) > 0
+        }
+        if total <= 0 or not active_capacities:
+            return {}
+
+        targets = {key: 0 for key in active_capacities}
+        if count_map:
+            requested = {
+                key: int(round(value))
+                for key, value in count_map.items()
+                if key in active_capacities and value > 0
+            }
+            requested_total = sum(requested.values())
+            if requested_total > total:
+                targets = cls._largest_remainder_targets(total, requested, active_capacities)
+            else:
+                for key, value in requested.items():
+                    targets[key] = min(value, active_capacities[key])
+        else:
+            weights = ratio_map or default_weights
+            targets = cls._largest_remainder_targets(total, weights, active_capacities)
+
+        selected_total = sum(targets.values())
+        if selected_total < total:
+            spare_capacities = {
+                key: capacity - targets.get(key, 0)
+                for key, capacity in active_capacities.items()
+                if capacity > targets.get(key, 0)
+            }
+            fill_weights = {
+                key: ratio_map.get(key) or default_weights.get(key) or spare_capacities[key]
+                for key in spare_capacities
+            }
+            extra_targets = cls._largest_remainder_targets(total - selected_total, fill_weights, spare_capacities)
+            for key, value in extra_targets.items():
+                targets[key] = targets.get(key, 0) + value
+
+        return {key: value for key, value in targets.items() if value > 0}
+
+    @staticmethod
+    def _largest_remainder_targets(
+        total: int,
+        weights: Dict[str, float],
+        capacities: Dict[str, int],
+    ) -> Dict[str, int]:
+        active_weights = {
+            key: max(float(weights.get(key, 0)), 0.0)
+            for key in capacities
+            if capacities[key] > 0
+        }
+        if not any(active_weights.values()):
+            active_weights = {key: float(capacity) for key, capacity in capacities.items() if capacity > 0}
+        weight_total = sum(active_weights.values())
+        if total <= 0 or weight_total <= 0:
+            return {key: 0 for key in capacities}
+
+        targets: Dict[str, int] = {}
+        remainders: List[Tuple[float, float, int, str]] = []
+        for key, capacity in capacities.items():
+            raw_target = total * (active_weights.get(key, 0.0) / weight_total)
+            base_target = min(capacity, int(math.floor(raw_target)))
+            targets[key] = base_target
+            remainders.append((raw_target - base_target, active_weights.get(key, 0.0), capacity, key))
+
+        remaining = total - sum(targets.values())
+        while remaining > 0:
+            candidates = [
+                (remainder, weight, capacity, key)
+                for remainder, weight, capacity, key in remainders
+                if targets.get(key, 0) < capacity
+            ]
+            if not candidates:
+                break
+            _, _, _, key = max(candidates)
+            targets[key] += 1
+            remaining -= 1
+        return targets
+
+    @staticmethod
+    def _target_chapter_ids(
+        *,
+        config: Dict[str, Any],
+        target_count: int,
+        chapter_capacities: Counter,
+    ) -> Set[int]:
+        raw_coverage = config.get("chapter_coverage", config.get("chapterCoverage", 0))
+        try:
+            coverage = float(raw_coverage)
+        except (TypeError, ValueError):
+            coverage = 0.0
+        if coverage > 1:
+            coverage = coverage / 100
+        coverage = max(0.0, min(1.0, coverage))
+        if coverage <= 0 or target_count <= 0:
+            return set()
+
+        raw_scope = config.get("chapter_ids") or config.get("chapterIds")
+        scope: List[int] = []
+        if isinstance(raw_scope, list):
+            for item in raw_scope:
+                try:
+                    scope.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+        available_chapters = [
+            chapter_id
+            for chapter_id in (scope or list(chapter_capacities.keys()))
+            if chapter_capacities.get(chapter_id, 0) > 0
+        ]
+        if not available_chapters:
+            return set()
+
+        target_chapter_count = min(
+            target_count,
+            len(available_chapters),
+            max(1, int(math.ceil(len(available_chapters) * coverage))),
+        )
+        ranked_chapters = sorted(
+            available_chapters,
+            key=lambda chapter_id: (-chapter_capacities.get(chapter_id, 0), chapter_id),
+        )
+        return set(ranked_chapters[:target_chapter_count])
+
+    @staticmethod
+    def _candidate_keeps_constraints(
+        *,
+        question: Question,
+        remaining_slots_after: int,
+        selected_types: Counter,
+        selected_difficulties: Counter,
+        selected_chapters: Counter,
+        type_targets: Dict[str, int],
+        difficulty_targets: Dict[str, int],
+        target_chapter_ids: Set[int],
+    ) -> bool:
+        question_type = question.question_type
+        difficulty = question.difficulty or Difficulty.MEDIUM.value
+        type_missing = 0
+        for key, target in type_targets.items():
+            after_count = selected_types.get(key, 0) + (1 if key == question_type else 0)
+            type_missing += max(target - after_count, 0)
+
+        difficulty_missing = 0
+        for key, target in difficulty_targets.items():
+            after_count = selected_difficulties.get(key, 0) + (1 if key == difficulty else 0)
+            difficulty_missing += max(target - after_count, 0)
+
+        covered_chapters = {
+            chapter_id for chapter_id in selected_chapters if chapter_id in target_chapter_ids
+        }
+        if question.chapter_id in target_chapter_ids:
+            covered_chapters.add(question.chapter_id)
+        chapter_missing = max(len(target_chapter_ids) - len(covered_chapters), 0)
+
+        return (
+            type_missing <= remaining_slots_after
+            and difficulty_missing <= remaining_slots_after
+            and chapter_missing <= remaining_slots_after
+        )
+
+    @staticmethod
+    def _constraint_greedy_score(
+        *,
+        question: Question,
+        selected_types: Counter,
+        selected_difficulties: Counter,
+        selected_chapters: Counter,
+        type_targets: Dict[str, int],
+        difficulty_targets: Dict[str, int],
+        target_chapter_ids: Set[int],
+        max_frequency: int,
+        min_year: Optional[int],
+        max_year: Optional[int],
+    ) -> float:
+        question_type = question.question_type
+        difficulty = question.difficulty or Difficulty.MEDIUM.value
+        score = 0.0
+
+        type_target = type_targets.get(question_type, 0)
+        type_deficit = type_target - selected_types.get(question_type, 0)
+        score += 90 + type_deficit * 8 if type_deficit > 0 else -25 * abs(type_deficit)
+
+        difficulty_target = difficulty_targets.get(difficulty, 0)
+        difficulty_deficit = difficulty_target - selected_difficulties.get(difficulty, 0)
+        score += 80 + difficulty_deficit * 7 if difficulty_deficit > 0 else -20 * abs(difficulty_deficit)
+
+        if target_chapter_ids:
+            if question.chapter_id in target_chapter_ids and selected_chapters.get(question.chapter_id, 0) == 0:
+                score += 120
+            elif question.chapter_id in target_chapter_ids:
+                score += max(0, 30 - selected_chapters.get(question.chapter_id, 0) * 8)
+            else:
+                score -= 20
+        elif question.chapter_id is not None:
+            score -= selected_chapters.get(question.chapter_id, 0) * 4
+
+        frequency = max(question.frequency or 0, 0)
+        score += (frequency / max(max_frequency, 1)) * 20
+        if question.year and min_year is not None and max_year is not None and max_year > min_year:
+            score += ((question.year - min_year) / (max_year - min_year)) * 8
+        elif question.year:
+            score += 4
+        score += (question.score or 0) * 0.4
+        score -= (question.id or 0) * 0.000001
+        return score
+
+    @staticmethod
+    def _build_constraint_report(
+        *,
+        selected_questions: List[Question],
+        available_questions: List[Question],
+        requested_limit: int,
+        target_count: int,
+        type_targets: Dict[str, int],
+        difficulty_targets: Dict[str, int],
+        target_chapter_ids: Set[int],
+        relaxed: List[str],
+    ) -> Dict[str, Any]:
+        actual_types = Counter(question.question_type for question in selected_questions)
+        actual_difficulties = Counter(
+            question.difficulty or Difficulty.MEDIUM.value for question in selected_questions
+        )
+        covered_chapters = {
+            question.chapter_id
+            for question in selected_questions
+            if question.chapter_id is not None
+        }
+        available_chapters = {
+            question.chapter_id
+            for question in available_questions
+            if question.chapter_id is not None
+        }
+        target_chapter_count = len(target_chapter_ids)
+        actual_target_coverage = len(covered_chapters & target_chapter_ids)
+        actual_chapter_coverage = (
+            round(len(covered_chapters) / len(available_chapters), 4)
+            if available_chapters
+            else 0.0
+        )
+        type_satisfied = all(actual_types.get(key, 0) >= target for key, target in type_targets.items())
+        difficulty_satisfied = all(
+            actual_difficulties.get(key, 0) >= target for key, target in difficulty_targets.items()
+        )
+        chapter_satisfied = actual_target_coverage >= target_chapter_count
+        count_satisfied = len(selected_questions) == target_count
+        relaxed_items = list(relaxed)
+        if not type_satisfied:
+            relaxed_items.append("题型配比未完全满足。")
+        if not difficulty_satisfied:
+            relaxed_items.append("难度配比未完全满足。")
+        if not chapter_satisfied:
+            relaxed_items.append("章节覆盖未完全满足。")
+        if not count_satisfied:
+            relaxed_items.append("题目数量未达到目标。")
+
+        return {
+            "algorithm": "constraint_greedy_v1",
+            "requested_count": requested_limit,
+            "target_count": target_count,
+            "selected_count": len(selected_questions),
+            "available_count": len(available_questions),
+            "question_type_target": dict(type_targets),
+            "question_type_actual": dict(actual_types),
+            "difficulty_target": dict(difficulty_targets),
+            "difficulty_actual": dict(actual_difficulties),
+            "chapter_coverage_target_count": target_chapter_count,
+            "chapter_coverage_actual_count": actual_target_coverage,
+            "chapter_coverage_actual": actual_chapter_coverage,
+            "covered_chapter_ids": sorted(covered_chapters),
+            "target_chapter_ids": sorted(target_chapter_ids),
+            "satisfied": not relaxed_items,
+            "relaxed": relaxed_items,
         }
 
     def _build_online_questions(
@@ -1165,6 +1641,7 @@ class ExamEngine:
             "difficulty": question.difficulty,
             "year": question.year,
             "month": question.month,
+            "chapter_id": question.chapter_id,
         }
         if include_answer:
             data["answer"] = question.answer
