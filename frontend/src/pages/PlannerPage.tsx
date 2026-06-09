@@ -1,9 +1,52 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react'
-import { DailyTask, plannerApi, StudyPlan, TimeAllocation, WeakPoint } from '../api/planner'
+import { DailyTask, plannerApi, PlanTask, StudyPlan, TimeAllocation, WeakPoint } from '../api/planner'
 import { sessionStore } from '../api/session'
 import { subjectApi, Subject } from '../api/subject'
 
 const formatDate = (value: string) => new Date(value).toLocaleDateString()
+
+const dateKey = (value: string | Date) => {
+  const date = value instanceof Date ? value : new Date(value)
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const addDays = (date: Date, days: number) => {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+const buildCalendarWeeks = (tasks: PlanTask[]) => {
+  if (tasks.length === 0) return []
+  const sortedTasks = [...tasks].sort((a, b) => dateKey(a.date).localeCompare(dateKey(b.date)))
+  const tasksByDate = new Map<string, PlanTask[]>()
+  sortedTasks.forEach((task) => {
+    const key = dateKey(task.date)
+    tasksByDate.set(key, [...(tasksByDate.get(key) || []), task])
+  })
+
+  const start = new Date(dateKey(sortedTasks[0].date))
+  const end = new Date(dateKey(sortedTasks[sortedTasks.length - 1].date))
+  const weekOffset = (start.getDay() + 6) % 7
+  const cursor = addDays(start, -weekOffset)
+  const weeks = []
+
+  while (cursor <= end || weeks.length === 0 || weeks[weeks.length - 1].length < 7) {
+    const week = []
+    for (let index = 0; index < 7; index += 1) {
+      const current = addDays(cursor, index)
+      const key = dateKey(current)
+      week.push({ date: key, tasks: tasksByDate.get(key) || [] })
+    }
+    weeks.push(week)
+    cursor.setDate(cursor.getDate() + 7)
+    if (weeks.length > 12) break
+  }
+  return weeks
+}
 
 const daysUntil = (value: string) => {
   const target = new Date(value).getTime()
@@ -155,6 +198,7 @@ const PlannerPage: React.FC = () => {
 
   const progress = currentPlan?.completion_rate || 0
   const planTasks = currentPlan?.plan_data.tasks || []
+  const planCalendarWeeks = useMemo(() => buildCalendarWeeks(planTasks), [planTasks])
   const planPhases = currentPlan?.plan_data.phases || []
   const weeklyGoals = currentPlan?.plan_data.weekly_goals || []
   const dailyTemplate = currentPlan?.plan_data.daily_template || []
@@ -306,6 +350,63 @@ const PlannerPage: React.FC = () => {
 
       {currentPlan && (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm xl:col-span-2">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">学习日历</h2>
+                <p className="mt-1 text-sm text-slate-500">按周查看每日刷题、复习和视频任务。</p>
+              </div>
+              <div className="text-sm text-slate-500">展示 {Math.min(planTasks.length, 84)} 项计划任务</div>
+            </div>
+            <div className="mt-4 overflow-x-auto">
+              <div className="min-w-[840px]">
+                <div className="grid grid-cols-7 gap-2 text-center text-xs font-medium text-slate-500">
+                  {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => (
+                    <div key={day}>{day}</div>
+                  ))}
+                </div>
+                <div className="mt-2 space-y-2">
+                  {planCalendarWeeks.map((week) => (
+                    <div key={week[0].date} className="grid grid-cols-7 gap-2">
+                      {week.map((day) => (
+                        <div
+                          key={day.date}
+                          className={`min-h-28 rounded-lg border p-2 ${
+                            day.tasks.length > 0 ? 'border-blue-100 bg-blue-50' : 'border-slate-100 bg-slate-50'
+                          }`}
+                        >
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-slate-600">{day.date.slice(5)}</span>
+                            {day.date === dateKey(new Date()) && (
+                              <span className="rounded-full bg-blue-600 px-2 py-0.5 text-[10px] text-white">今天</span>
+                            )}
+                          </div>
+                          <div className="space-y-1">
+                            {day.tasks.slice(0, 2).map((task, index) => (
+                              <div key={`${day.date}-${task.subject_id}-${index}`} className="rounded bg-white px-2 py-1 text-xs text-slate-700">
+                                <div className="truncate font-medium">
+                                  {subjectNameById.get(task.subject_id) || `科目 ${task.subject_id}`}
+                                </div>
+                                <div className="mt-0.5 truncate text-slate-500">
+                                  刷题 {task.question_count} · 复习 {task.review_points.length}
+                                  {task.video_ids.length ? ` · 视频 ${task.video_ids.length}` : ''}
+                                </div>
+                              </div>
+                            ))}
+                            {day.tasks.length > 2 && (
+                              <div className="text-xs text-slate-500">+{day.tasks.length - 2} 项</div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                  {planCalendarWeeks.length === 0 && <div className="text-sm text-slate-500">生成学习计划后展示日历</div>}
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold">阶段计划</h2>
             <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">

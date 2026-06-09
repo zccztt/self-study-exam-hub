@@ -49,17 +49,23 @@ class QuestionService:
             or_(Question.source.is_(None), ~Question.source.like(f"{TEMP_ONLINE_SOURCE_PREFIX}%"))
         )
         selected_subjects = self._resolve_subjects(subject_id, subject_code, subject_query)
+        es_ranked_ids = self._search_question_ids_with_elasticsearch(keyword)
+        search_engine = "sql"
 
         if keyword:
-            pattern = f"%{keyword.strip()}%"
-            query = query.filter(
-                or_(
-                    Question.content.ilike(pattern),
-                    Question.answer.ilike(pattern),
-                    Question.explanation.ilike(pattern),
-                    Question.source.ilike(pattern),
+            if es_ranked_ids:
+                query = query.filter(Question.id.in_(es_ranked_ids))
+                search_engine = "elasticsearch"
+            else:
+                pattern = f"%{keyword.strip()}%"
+                query = query.filter(
+                    or_(
+                        Question.content.ilike(pattern),
+                        Question.answer.ilike(pattern),
+                        Question.explanation.ilike(pattern),
+                        Question.source.ilike(pattern),
+                    )
                 )
-            )
 
         if selected_subjects:
             query = query.filter(Question.subject_id.in_([subject.id for subject in selected_subjects]))
@@ -82,12 +88,16 @@ class QuestionService:
             query = query.filter(Question.frequency >= 3)
 
         total = query.count()
-        questions = (
-            query.order_by(Question.frequency.desc(), Question.year.desc().nullslast(), Question.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-            .all()
-        )
+        if search_engine == "elasticsearch":
+            questions = self._order_es_ranked_questions(query.all(), es_ranked_ids)
+            questions = questions[(page - 1) * page_size : page * page_size]
+        else:
+            questions = (
+                query.order_by(Question.frequency.desc(), Question.year.desc().nullslast(), Question.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all()
+            )
         subject_lookup = self._build_subject_lookup(questions)
         local_items = [
             self._serialize_question(question, include_answer=False, subject_lookup=subject_lookup)
@@ -113,6 +123,7 @@ class QuestionService:
             "local_count": total,
             "online_count": len(online_items),
             "online_enabled": online_search,
+            "search_engine": search_engine,
         }
 
     def get_question_detail(self, question_id: int) -> Optional[Dict[str, Any]]:
@@ -262,6 +273,32 @@ class QuestionService:
             return {}
         subjects = self.db.query(Subject).filter(Subject.id.in_(subject_ids)).all()
         return {subject.id: subject for subject in subjects}
+
+    def _search_question_ids_with_elasticsearch(self, keyword: Optional[str], max_results: int = 500) -> List[int]:
+        keyword_text = str(keyword or "").strip()
+        if not keyword_text or not self.es:
+            return []
+        response = self.es.search_questions(keyword_text, page=1, page_size=max_results)
+        hits = response.get("hits", {}).get("hits", []) if isinstance(response, dict) else []
+        ranked_ids: List[int] = []
+        seen = set()
+        for hit in hits:
+            source = hit.get("_source") or {}
+            raw_id = source.get("id") or hit.get("_id")
+            try:
+                question_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if question_id in seen:
+                continue
+            seen.add(question_id)
+            ranked_ids.append(question_id)
+        return ranked_ids
+
+    @staticmethod
+    def _order_es_ranked_questions(questions: List[Question], ranked_ids: List[int]) -> List[Question]:
+        rank = {question_id: index for index, question_id in enumerate(ranked_ids)}
+        return sorted(questions, key=lambda question: rank.get(int(question.id or 0), len(rank)))
 
     def _search_online_questions(
         self,

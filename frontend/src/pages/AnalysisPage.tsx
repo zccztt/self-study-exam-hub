@@ -8,8 +8,10 @@ import {
   KnowledgeTree,
   PointTrend,
   QuestionTypeDistribution,
+  ScoreTrend,
   WordCloudItem,
 } from '../api/analysis'
+import { sessionStore } from '../api/session'
 import { subjectApi, Subject } from '../api/subject'
 
 const questionTypeLabels: Record<string, string> = {
@@ -33,6 +35,7 @@ const AnalysisPage: React.FC = () => {
   const [knowledgeNetwork, setKnowledgeNetwork] = useState<KnowledgeNetwork | null>(null)
   const [hotspots, setHotspots] = useState<HotspotAlert[]>([])
   const [prediction, setPrediction] = useState<HighFrequencyPoint[]>([])
+  const [scoreTrend, setScoreTrend] = useState<ScoreTrend | null>(null)
   const [selectedPoint, setSelectedPoint] = useState<HighFrequencyPoint | null>(null)
   const [pointTrend, setPointTrend] = useState<PointTrend | null>(null)
   const [loading, setLoading] = useState(false)
@@ -52,6 +55,7 @@ const AnalysisPage: React.FC = () => {
         networkData,
         predictionData,
         hotspotData,
+        scoreTrendData,
       ] =
         await Promise.all([
           analysisApi.getKnowledgeTree(nextSubjectId),
@@ -62,6 +66,7 @@ const AnalysisPage: React.FC = () => {
           analysisApi.getKnowledgeNetwork(nextSubjectId, 30),
           analysisApi.predictNextExam(nextSubjectId),
           analysisApi.getHotspots(nextSubjectId),
+          analysisApi.getScoreTrends(sessionStore.getUserId(), nextSubjectId, 20),
         ])
       setKnowledgeTree(treeData)
       setHighFrequencyPoints(highFrequencyData)
@@ -71,6 +76,7 @@ const AnalysisPage: React.FC = () => {
       setKnowledgeNetwork(networkData)
       setHotspots(hotspotData)
       setPrediction(predictionData)
+      setScoreTrend(scoreTrendData)
       setSelectedPoint(highFrequencyData[0] || null)
       if (highFrequencyData[0]) {
         const trendData = await analysisApi.getPointTrend(nextSubjectId, highFrequencyData[0].id, 5)
@@ -106,6 +112,8 @@ const AnalysisPage: React.FC = () => {
   const maxWordWeight = Math.max(1, ...wordCloud.map((item) => item.weight))
   const maxTrendCount = Math.max(1, ...(pointTrend?.values || []).map((item) => item.count))
   const maxEdgeWeight = Math.max(1, ...(knowledgeNetwork?.edges || []).map((item) => item.weight))
+  const maxScoreRate = Math.max(1, ...(scoreTrend?.values || []).map((item) => item.score_rate))
+  const maxChapterScoreRate = Math.max(1, ...(scoreTrend?.chapters || []).map((item) => item.score_rate))
   const selectedDetail = selectedPoint?.detail
 
   const selectPoint = async (point: HighFrequencyPoint) => {
@@ -164,6 +172,83 @@ const AnalysisPage: React.FC = () => {
             <div className="mt-1 text-sm text-slate-500">{desc}</div>
           </div>
         ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+        <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">成绩趋势</h2>
+              <p className="mt-1 text-sm text-slate-500">按当前科目统计最近考试得分率。</p>
+            </div>
+            <span
+              className={`rounded-full px-3 py-1 text-xs ${
+                scoreTrend?.summary.trend === 'up'
+                  ? 'bg-green-50 text-green-700'
+                  : scoreTrend?.summary.trend === 'down'
+                    ? 'bg-red-50 text-red-700'
+                    : 'bg-slate-100 text-slate-600'
+              }`}
+            >
+              {scoreTrend?.summary.trend === 'up' ? '上升' : scoreTrend?.summary.trend === 'down' ? '下降' : '稳定'}
+            </span>
+          </div>
+          <div className="mt-5 grid grid-cols-3 gap-3">
+            <div className="rounded-lg border border-slate-200 p-4">
+              <div className="text-sm text-slate-500">考试场次</div>
+              <div className="mt-1 text-2xl font-bold">{scoreTrend?.summary.sessions || 0}</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-4">
+              <div className="text-sm text-slate-500">平均得分率</div>
+              <div className="mt-1 text-2xl font-bold">{scoreTrend?.summary.average_score_rate || 0}%</div>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-4">
+              <div className="text-sm text-slate-500">最近得分率</div>
+              <div className="mt-1 text-2xl font-bold">{scoreTrend?.summary.latest_score_rate || 0}%</div>
+            </div>
+          </div>
+          <div className="mt-5 space-y-3">
+            {(scoreTrend?.values || []).slice(-6).map((item) => (
+              <div key={item.session_id} className="flex items-center gap-3">
+                <div className="w-24 text-xs text-slate-500">{item.date || '未提交'}</div>
+                <div className="flex-1 rounded-full bg-slate-100 h-6">
+                  <div
+                    className="flex h-6 items-center justify-end rounded-full bg-blue-500 pr-2 text-xs font-medium text-white"
+                    style={{ width: `${Math.max(8, (item.score_rate / maxScoreRate) * 100)}%` }}
+                  >
+                    {item.score_rate}%
+                  </div>
+                </div>
+              </div>
+            ))}
+            {scoreTrend?.values.length === 0 && <div className="text-sm text-slate-500">暂无考试成绩记录</div>}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-xl font-semibold">章节得分表现</h2>
+          <p className="mt-1 text-sm text-slate-500">根据考试错题反推章节正确率，优先关注低分章节。</p>
+          <div className="mt-5 space-y-3">
+            {(scoreTrend?.chapters || []).slice(0, 8).map((item) => (
+              <div key={item.chapter_id} className="rounded-lg border border-slate-200 px-4 py-3">
+                <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                  <span className="font-medium text-slate-800">{item.chapter_name}</span>
+                  <span className="text-slate-500">
+                    {item.correct_count}/{item.total_count} · 错 {item.wrong_count}
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-slate-100">
+                  <div
+                    className={`h-2 rounded-full ${item.score_rate < 60 ? 'bg-red-500' : item.score_rate < 80 ? 'bg-amber-500' : 'bg-green-500'}`}
+                    style={{ width: `${Math.max(8, (item.score_rate / maxChapterScoreRate) * 100)}%` }}
+                  />
+                </div>
+                <div className="mt-1 text-xs text-slate-500">正确率 {item.score_rate}%</div>
+              </div>
+            ))}
+            {scoreTrend?.chapters.length === 0 && <div className="text-sm text-slate-500">暂无章节成绩数据</div>}
+          </div>
+        </section>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">

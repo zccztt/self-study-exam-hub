@@ -66,3 +66,13 @@ async def predict_next_exam(subject_id: int, db: Session = Depends(get_db)):
 @router.get("/hotspots/{subject_id}")
 async def get_hotspot_alerts(subject_id: int, db: Session = Depends(get_db)):
     return {"code": 0, "data": AnalysisService(db).get_hotspot_alerts(subject_id)}
+
+
+@router.get("/score-trends/{user_id}")
+async def get_score_trends(
+    user_id: int,
+    subject_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    return {"code": 0, "data": AnalysisService(db).get_score_trends(user_id, subject_id, limit)}

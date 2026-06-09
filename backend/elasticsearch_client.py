@@ -15,7 +15,11 @@ QUESTION_INDEX_MAPPING = {
         "properties": {
             "id": {"type": "keyword"},
             "subject_id": {"type": "integer"},
+            "chapter_id": {"type": "integer"},
             "content": {"type": "text"},
+            "answer": {"type": "text"},
+            "explanation": {"type": "text"},
+            "source": {"type": "text"},
             "question_type": {"type": "keyword"},
             "year": {"type": "integer"},
             "difficulty": {"type": "keyword"},

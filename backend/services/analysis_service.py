@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.models.chapter import Chapter, KnowledgePoint, QuestionKnowledgePoint
+from backend.models.exam import Exam, ExamSession, ExamStatus, WrongQuestion
 from backend.models.question import Question
 from backend.models.subject import Subject
 
@@ -416,6 +417,170 @@ class AnalysisService:
             )
         alerts.sort(key=lambda item: (item["severity"] == "high", item["priority_score"]), reverse=True)
         return alerts[:8]
+
+    def get_score_trends(
+        self,
+        user_id: int,
+        subject_id: int | None = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        query = (
+            self.db.query(ExamSession, Exam, Subject)
+            .join(Exam, ExamSession.exam_id == Exam.id)
+            .join(Subject, Exam.subject_id == Subject.id)
+            .filter(
+                ExamSession.user_id == user_id,
+                ExamSession.status == ExamStatus.COMPLETED.value,
+                ExamSession.submitted_at.isnot(None),
+            )
+        )
+        if subject_id:
+            query = query.filter(Exam.subject_id == subject_id)
+
+        rows = (
+            query.order_by(ExamSession.submitted_at.asc(), ExamSession.id.asc())
+            .limit(max(limit, 1))
+            .all()
+        )
+        session_rows = list(rows)
+        values: List[Dict[str, Any]] = []
+        subject_stats: Dict[int, Dict[str, Any]] = {}
+        session_question_ids: Dict[str, List[int]] = {}
+        all_question_ids: set[int] = set()
+
+        for session, exam, subject in session_rows:
+            total_score = exam.total_score or 100
+            score = session.score or 0
+            score_rate = round(score / total_score * 100, 2) if total_score else 0
+            submitted_at = session.submitted_at or session.start_time
+            values.append(
+                {
+                    "session_id": session.session_id,
+                    "exam_id": exam.id,
+                    "exam_name": exam.name,
+                    "date": submitted_at.date().isoformat() if submitted_at else None,
+                    "subject_id": subject.id,
+                    "subject_name": subject.name,
+                    "score": score,
+                    "total_score": total_score,
+                    "score_rate": score_rate,
+                    "mode": exam.mode,
+                }
+            )
+            stats = subject_stats.setdefault(
+                int(subject.id),
+                {
+                    "subject_id": subject.id,
+                    "subject_name": subject.name,
+                    "sessions": 0,
+                    "average_score_rate": 0.0,
+                    "best_score_rate": 0.0,
+                    "latest_score_rate": 0.0,
+                    "values": [],
+                },
+            )
+            stats["sessions"] += 1
+            stats["best_score_rate"] = max(float(stats["best_score_rate"]), score_rate)
+            stats["latest_score_rate"] = score_rate
+            stats["values"].append({"date": submitted_at.date().isoformat() if submitted_at else None, "score_rate": score_rate})
+
+            question_ids = [int(item) for item in (exam.question_ids or []) if str(item).isdigit()]
+            session_question_ids[session.session_id] = question_ids
+            all_question_ids.update(question_ids)
+
+        for stats in subject_stats.values():
+            rates = [float(item["score_rate"]) for item in stats["values"]]
+            stats["average_score_rate"] = round(sum(rates) / len(rates), 2) if rates else 0
+            stats["trend_slope"] = round(self._linear_regression_slope(rates), 4)
+            stats["trend"] = self._score_trend_label(float(stats["trend_slope"]))
+
+        chapter_items = self._build_chapter_score_items(user_id, session_question_ids, all_question_ids)
+        score_rates = [float(item["score_rate"]) for item in values]
+        latest_rate = score_rates[-1] if score_rates else 0
+        return {
+            "user_id": user_id,
+            "subject_id": subject_id,
+            "summary": {
+                "sessions": len(values),
+                "average_score_rate": round(sum(score_rates) / len(score_rates), 2) if score_rates else 0,
+                "latest_score_rate": latest_rate,
+                "best_score_rate": max(score_rates) if score_rates else 0,
+                "trend_slope": round(self._linear_regression_slope(score_rates), 4),
+                "trend": self._score_trend_label(self._linear_regression_slope(score_rates)),
+            },
+            "values": values,
+            "subjects": sorted(subject_stats.values(), key=lambda item: item["latest_score_rate"], reverse=True),
+            "chapters": chapter_items,
+        }
+
+    def _build_chapter_score_items(
+        self,
+        user_id: int,
+        session_question_ids: Dict[str, List[int]],
+        all_question_ids: set[int],
+    ) -> List[Dict[str, Any]]:
+        if not all_question_ids:
+            return []
+        questions = (
+            self.db.query(Question.id, Question.chapter_id, Chapter.name)
+            .outerjoin(Chapter, Question.chapter_id == Chapter.id)
+            .filter(Question.id.in_(all_question_ids))
+            .all()
+        )
+        question_chapters = {
+            int(question_id): (chapter_id, chapter_name or "未分章")
+            for question_id, chapter_id, chapter_name in questions
+            if chapter_id is not None
+        }
+        wrong_rows = (
+            self.db.query(WrongQuestion.session_id, WrongQuestion.question_id)
+            .filter(
+                WrongQuestion.user_id == user_id,
+                WrongQuestion.session_id.in_(list(session_question_ids.keys())),
+            )
+            .all()
+        )
+        wrong_by_session = defaultdict(set)
+        for session_id, question_id in wrong_rows:
+            wrong_by_session[str(session_id)].add(int(question_id))
+
+        chapter_stats: Dict[int, Dict[str, Any]] = {}
+        for session_id, question_ids in session_question_ids.items():
+            wrong_ids = wrong_by_session.get(session_id, set())
+            for question_id in question_ids:
+                chapter_meta = question_chapters.get(question_id)
+                if not chapter_meta:
+                    continue
+                chapter_id, chapter_name = chapter_meta
+                stats = chapter_stats.setdefault(
+                    int(chapter_id),
+                    {
+                        "chapter_id": chapter_id,
+                        "chapter_name": chapter_name,
+                        "total_count": 0,
+                        "wrong_count": 0,
+                        "correct_count": 0,
+                        "score_rate": 0.0,
+                    },
+                )
+                stats["total_count"] += 1
+                if question_id in wrong_ids:
+                    stats["wrong_count"] += 1
+                else:
+                    stats["correct_count"] += 1
+
+        for stats in chapter_stats.values():
+            total = int(stats["total_count"])
+            stats["score_rate"] = round(int(stats["correct_count"]) / total * 100, 2) if total else 0
+        return sorted(chapter_stats.values(), key=lambda item: (item["score_rate"], -item["total_count"]))
+
+    @staticmethod
+    def _score_trend_label(slope: float) -> str:
+        if slope > 1:
+            return "up"
+        if slope < -1:
+            return "down"
+        return "stable"
 
     def _trend_label(self, subject_id: int, point_id: int) -> str:
         return self.get_point_trend(subject_id, point_id, years=5)["trend"]

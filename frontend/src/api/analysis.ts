@@ -121,6 +121,58 @@ export interface QuestionTypeDistribution {
   items: QuestionTypeItem[]
 }
 
+export interface ScoreTrendValue {
+  session_id: string
+  exam_id: number
+  exam_name: string
+  date?: string
+  subject_id: number
+  subject_name: string
+  score: number
+  total_score: number
+  score_rate: number
+  mode: string
+}
+
+export interface SubjectScoreTrend {
+  subject_id: number
+  subject_name: string
+  sessions: number
+  average_score_rate: number
+  best_score_rate: number
+  latest_score_rate: number
+  trend_slope: number
+  trend: string
+  values: Array<{ date?: string; score_rate: number }>
+}
+
+export interface ChapterScoreTrend {
+  chapter_id: number
+  chapter_name: string
+  total_count: number
+  wrong_count: number
+  correct_count: number
+  score_rate: number
+}
+
+export interface ScoreTrendSummary {
+  sessions: number
+  average_score_rate: number
+  latest_score_rate: number
+  best_score_rate: number
+  trend_slope: number
+  trend: string
+}
+
+export interface ScoreTrend {
+  user_id: number
+  subject_id?: number
+  summary: ScoreTrendSummary
+  values: ScoreTrendValue[]
+  subjects: SubjectScoreTrend[]
+  chapters: ChapterScoreTrend[]
+}
+
 export const analysisApi = {
   getKnowledgeTree: (subjectId: number) =>
     unwrap<KnowledgeTree>(apiClient.get(`/analysis/knowledge-tree/${subjectId}`)),
@@ -146,4 +198,10 @@ export const analysisApi = {
     unwrap<HighFrequencyPoint[]>(apiClient.get(`/analysis/prediction/${subjectId}`)),
   getHotspots: (subjectId: number) =>
     unwrap<HotspotAlert[]>(apiClient.get(`/analysis/hotspots/${subjectId}`)),
+  getScoreTrends: (userId: number, subjectId?: number, limit = 20) =>
+    unwrap<ScoreTrend>(
+      apiClient.get(`/analysis/score-trends/${userId}`, {
+        params: { subject_id: subjectId, limit },
+      }),
+    ),
 }
