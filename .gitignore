@@ -60,6 +60,7 @@ dist-ssr/
 # Logs
 logs/
 *.log
+.runtime/
 
 # Test
 .coverage
