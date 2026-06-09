@@ -2,7 +2,10 @@
 """Exam paper generation, session control, scoring, and wrong-book handling."""
 
 from collections import Counter, defaultdict
+import csv
 import hashlib
+import html
+import io
 import json
 import math
 import random
@@ -1629,6 +1632,44 @@ class ExamEngine:
             "items": [self._serialize_wrong_question(wrong, question) for wrong, question in rows],
         }
 
+    def export_wrong_questions(
+        self,
+        user_id: int,
+        export_format: str = "markdown",
+        subject_id: Optional[int] = None,
+        chapter_ids: Optional[List[int]] = None,
+        is_mastered: Optional[bool] = None,
+        keyword: Optional[str] = None,
+    ) -> Dict[str, str]:
+        export_format = export_format.lower()
+        result = self.get_wrong_questions(
+            user_id=user_id,
+            subject_id=subject_id,
+            chapter_ids=chapter_ids,
+            is_mastered=is_mastered,
+            keyword=keyword,
+            page=1,
+            page_size=1000,
+        )
+        items = result["items"]
+        if export_format == "csv":
+            return {
+                "filename": f"wrong_questions_{user_id}.csv",
+                "media_type": "text/csv; charset=utf-8",
+                "content": self._wrong_questions_to_csv(items),
+            }
+        if export_format in {"word", "doc"}:
+            return {
+                "filename": f"wrong_questions_{user_id}.doc",
+                "media_type": "application/msword; charset=utf-8",
+                "content": self._wrong_questions_to_word_html(items),
+            }
+        return {
+            "filename": f"wrong_questions_{user_id}.md",
+            "media_type": "text/markdown; charset=utf-8",
+            "content": self._wrong_questions_to_markdown(items),
+        }
+
     def update_wrong_question(
         self,
         user_id: int,
@@ -1668,6 +1709,94 @@ class ExamEngine:
         self.db.delete(wrong)
         self.db.commit()
         return True
+
+    @staticmethod
+    def _wrong_questions_to_csv(items: List[Dict[str, Any]]) -> str:
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["题目ID", "题型", "题目", "你的答案", "参考答案", "错题次数", "掌握状态", "知识点", "解析"])
+        for item in items:
+            question = item["question"]
+            writer.writerow(
+                [
+                    item["question_id"],
+                    question.get("question_type") or "",
+                    question.get("content") or "",
+                    item.get("user_answer") or "",
+                    question.get("answer") or "",
+                    item.get("wrong_count") or 0,
+                    "已掌握" if item.get("is_mastered") else "未掌握",
+                    "、".join(point["name"] for point in item.get("knowledge_points") or []),
+                    question.get("explanation") or "",
+                ]
+            )
+        return "\ufeff" + output.getvalue()
+
+    @staticmethod
+    def _wrong_questions_to_markdown(items: List[Dict[str, Any]]) -> str:
+        lines = ["# 错题本导出", ""]
+        if not items:
+            lines.append("暂无错题。")
+            return "\n".join(lines)
+
+        for index, item in enumerate(items, start=1):
+            question = item["question"]
+            points = "、".join(point["name"] for point in item.get("knowledge_points") or []) or "未标注"
+            lines.extend(
+                [
+                    f"## {index}. 题目 {item['question_id']}",
+                    "",
+                    f"- 题型：{question.get('question_type') or '-'}",
+                    f"- 状态：{'已掌握' if item.get('is_mastered') else '未掌握'}",
+                    f"- 错误次数：{item.get('wrong_count') or 0}",
+                    f"- 知识点：{points}",
+                    "",
+                    str(question.get("content") or ""),
+                    "",
+                ]
+            )
+            options = question.get("options") or []
+            for option_index, option in enumerate(options):
+                lines.append(f"{chr(65 + option_index)}. {option}")
+            if options:
+                lines.append("")
+            lines.extend(
+                [
+                    f"你的答案：{item.get('user_answer') or '-'}",
+                    f"参考答案：{question.get('answer') or '-'}",
+                    "",
+                    f"解析：{question.get('explanation') or '-'}",
+                    "",
+                ]
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _wrong_questions_to_word_html(items: List[Dict[str, Any]]) -> str:
+        rows = []
+        for index, item in enumerate(items, start=1):
+            question = item["question"]
+            points = "、".join(point["name"] for point in item.get("knowledge_points") or []) or "未标注"
+            rows.append(
+                "<tr>"
+                f"<td>{index}</td>"
+                f"<td>{html.escape(str(question.get('content') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('user_answer') or '-'))}</td>"
+                f"<td>{html.escape(str(question.get('answer') or '-'))}</td>"
+                f"<td>{html.escape(points)}</td>"
+                f"<td>{html.escape(str(question.get('explanation') or '-'))}</td>"
+                "</tr>"
+            )
+        return (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<style>body{font-family:Arial,'Microsoft YaHei',sans-serif;}"
+            "table{border-collapse:collapse;width:100%;}td,th{border:1px solid #ccc;padding:8px;vertical-align:top;}"
+            "th{background:#f3f4f6;}</style></head><body>"
+            "<h1>错题本导出</h1>"
+            "<table><thead><tr><th>#</th><th>题目</th><th>你的答案</th><th>参考答案</th><th>知识点</th><th>解析</th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=\"6\">暂无错题</td></tr>'}</tbody></table>"
+            "</body></html>"
+        )
 
     def get_session_detail(self, session_id: str) -> Dict[str, Any]:
         session = self._get_session(session_id)

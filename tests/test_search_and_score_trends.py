@@ -12,6 +12,7 @@ from backend.models.exam import Exam, ExamSession, ExamStatus, WrongQuestion
 from backend.models.question import Difficulty, Question, QuestionType
 from backend.models.subject import Subject
 from backend.services.analysis_service import AnalysisService
+from backend.services.exam_engine import ExamEngine
 from backend.services.question_service import QuestionService
 
 
@@ -131,5 +132,37 @@ def test_score_trends_include_subject_and_chapter_accuracy() -> None:
         chapters = {item["chapter_name"]: item for item in result["chapters"]}
         assert chapters["第一章"]["score_rate"] == 50
         assert chapters["第二章"]["score_rate"] == 100
+    finally:
+        db.close()
+
+
+def test_wrong_question_export_generates_download_content() -> None:
+    db = _session()
+    try:
+        _seed_subject(db)
+        _add_question(db, 1, "实践是检验真理的标准", 1)
+        db.add(
+            WrongQuestion(
+                user_id=1,
+                question_id=1,
+                session_id="s1",
+                user_answer="B",
+                wrong_count=2,
+                last_wrong_at=datetime(2026, 6, 1),
+            )
+        )
+        db.commit()
+
+        engine = ExamEngine(db)
+        markdown = engine.export_wrong_questions(user_id=1, export_format="markdown")
+        csv_payload = engine.export_wrong_questions(user_id=1, export_format="csv")
+        word_payload = engine.export_wrong_questions(user_id=1, export_format="word")
+
+        assert markdown["filename"].endswith(".md")
+        assert "实践是检验真理的标准" in markdown["content"]
+        assert csv_payload["filename"].endswith(".csv")
+        assert "你的答案" in csv_payload["content"]
+        assert word_payload["filename"].endswith(".doc")
+        assert "<table>" in word_payload["content"]
     finally:
         db.close()

@@ -1,4 +1,9 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
+import { GraphChart } from 'echarts/charts'
+import { TooltipComponent } from 'echarts/components'
+import * as echarts from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import ReactEChartsCore from 'echarts-for-react/lib/core'
 import {
   analysisApi,
   ChapterHeatmap,
@@ -13,6 +18,8 @@ import {
 } from '../api/analysis'
 import { sessionStore } from '../api/session'
 import { subjectApi, Subject } from '../api/subject'
+
+echarts.use([GraphChart, TooltipComponent, CanvasRenderer])
 
 const questionTypeLabels: Record<string, string> = {
   single_choice: '单选题',
@@ -115,6 +122,48 @@ const AnalysisPage: React.FC = () => {
   const maxScoreRate = Math.max(1, ...(scoreTrend?.values || []).map((item) => item.score_rate))
   const maxChapterScoreRate = Math.max(1, ...(scoreTrend?.chapters || []).map((item) => item.score_rate))
   const selectedDetail = selectedPoint?.detail
+  const networkChartOption = useMemo(
+    () => ({
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: { dataType?: string; data?: { name?: string; value?: number } }) => {
+          if (params.dataType === 'edge') return '共现关系'
+          return `${params.data?.name || ''}<br/>频次：${params.data?.value || 0}`
+        },
+      },
+      series: [
+        {
+          type: 'graph',
+          layout: 'force',
+          roam: true,
+          draggable: true,
+          label: { show: true, position: 'right', formatter: '{b}' },
+          force: { repulsion: 180, edgeLength: [70, 150], friction: 0.25 },
+          data: (knowledgeNetwork?.nodes || []).map((node) => ({
+            id: String(node.id),
+            name: node.name,
+            value: node.frequency,
+            symbolSize: Math.max(24, Math.min(64, 20 + node.frequency * 2)),
+            itemStyle: {
+              color: node.trend === 'up' ? '#16a34a' : node.importance === 'high' ? '#dc2626' : '#2563eb',
+            },
+          })),
+          links: (knowledgeNetwork?.edges || []).map((edge) => ({
+            source: String(edge.source),
+            target: String(edge.target),
+            value: edge.weight,
+            lineStyle: {
+              width: Math.max(1, (edge.weight / maxEdgeWeight) * 5),
+              opacity: 0.55,
+            },
+          })),
+          lineStyle: { color: '#94a3b8', curveness: 0.18 },
+          emphasis: { focus: 'adjacency', lineStyle: { width: 4 } },
+        },
+      ],
+    }),
+    [knowledgeNetwork, maxEdgeWeight],
+  )
 
   const selectPoint = async (point: HighFrequencyPoint) => {
     setSelectedPoint(point)
@@ -440,32 +489,11 @@ const AnalysisPage: React.FC = () => {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold mb-4">知识点关联网络</h2>
-          <div className="mb-4 flex flex-wrap gap-2">
-            {(knowledgeNetwork?.nodes || []).slice(0, 12).map((node) => (
-              <span key={node.id} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700">
-                {node.name} · {node.frequency}
-              </span>
-            ))}
-          </div>
-          <div className="space-y-3">
-            {(knowledgeNetwork?.edges || []).slice(0, 8).map((edge) => (
-              <div key={`${edge.source}-${edge.target}`} className="rounded-lg border border-slate-200 px-4 py-3">
-                <div className="flex items-center justify-between gap-3 text-sm">
-                  <span className="font-medium text-slate-800">
-                    {edge.source_name || `考点 ${edge.source}`} ↔ {edge.target_name || `考点 ${edge.target}`}
-                  </span>
-                  <span className="text-slate-500">共现 {edge.weight}</span>
-                </div>
-                <div className="mt-2 h-2 rounded-full bg-slate-100">
-                  <div
-                    className="h-2 rounded-full bg-indigo-500"
-                    style={{ width: `${Math.max(8, (edge.weight / maxEdgeWeight) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-            {knowledgeNetwork?.edges.length === 0 && <div className="text-gray-500">暂无知识点共现关系</div>}
-          </div>
+          {(knowledgeNetwork?.nodes.length || 0) > 0 ? (
+            <ReactEChartsCore echarts={echarts} option={networkChartOption} style={{ height: 360, width: '100%' }} />
+          ) : (
+            <div className="text-gray-500">暂无知识点共现关系</div>
+          )}
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">

@@ -187,6 +187,16 @@ export const examApi = {
         params: serializeWrongQuestionParams(params),
       }),
     ),
+  exportWrongQuestions: async (
+    params: WrongQuestionParams = {},
+    format: 'markdown' | 'csv' | 'word' = 'markdown',
+  ) => {
+    const response = await apiClient.get(`/exam/wrong-questions/${params.user_id || sessionStore.getUserId()}/export`, {
+      params: { ...serializeWrongQuestionParams(params), format },
+      responseType: 'blob',
+    })
+    return response.data as Blob
+  },
   updateWrongQuestion: (
     questionId: number,
     payload: { is_mastered?: boolean; tags?: string[]; note?: string },

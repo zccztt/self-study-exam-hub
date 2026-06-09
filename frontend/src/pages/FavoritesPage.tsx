@@ -122,6 +122,33 @@ const FavoritesPage: React.FC = () => {
     }
   }
 
+  const exportWrongBook = async (format: 'markdown' | 'csv' | 'word') => {
+    setError('')
+    try {
+      const blob = await examApi.exportWrongQuestions(
+        {
+          user_id: sessionStore.getUserId(),
+          keyword: wrongKeyword.trim() || undefined,
+          subject_id: wrongSubjectId ? Number(wrongSubjectId) : undefined,
+          is_mastered: wrongMastered ? wrongMastered === 'true' : undefined,
+          page: 1,
+          page_size: 1000,
+        },
+        format,
+      )
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `wrong_questions.${format === 'word' ? 'doc' : format === 'markdown' ? 'md' : 'csv'}`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '错题导出失败')
+    }
+  }
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-8">我的收藏</h1>
@@ -259,6 +286,29 @@ const FavoritesPage: React.FC = () => {
               {loading ? '筛选中...' : '筛选'}
             </button>
           </form>
+          <div className="flex flex-wrap gap-2 rounded-lg bg-white p-4 shadow">
+            <button
+              type="button"
+              onClick={() => void exportWrongBook('markdown')}
+              className="rounded border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              导出 Markdown
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportWrongBook('csv')}
+              className="rounded border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+            >
+              导出 CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportWrongBook('word')}
+              className="rounded border border-blue-500 px-4 py-2 text-sm text-blue-600 hover:bg-blue-50"
+            >
+              导出 Word
+            </button>
+          </div>
 
           {wrongQuestions.map((item) => (
             <div key={item.id} className="rounded-lg bg-white p-6 shadow">

@@ -3,7 +3,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -91,6 +91,32 @@ async def get_session_detail(session_id: str, db: Session = Depends(get_db)):
         return {"code": 0, "data": engine.get_session_detail(session_id)}
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/wrong-questions/{user_id}/export")
+async def export_wrong_questions(
+    user_id: int,
+    subject_id: Optional[int] = None,
+    chapter_ids: Optional[str] = None,
+    is_mastered: Optional[bool] = None,
+    keyword: Optional[str] = None,
+    format: str = Query(default="markdown", pattern="^(markdown|md|csv|word|doc)$"),
+    db: Session = Depends(get_db),
+):
+    engine = ExamEngine(db, redis_client)
+    payload = engine.export_wrong_questions(
+        user_id=user_id,
+        export_format="markdown" if format == "md" else format,
+        subject_id=subject_id,
+        chapter_ids=_split_ints(chapter_ids),
+        is_mastered=is_mastered,
+        keyword=keyword,
+    )
+    return Response(
+        content=payload["content"],
+        media_type=payload["media_type"],
+        headers={"Content-Disposition": f'attachment; filename="{payload["filename"]}"'},
+    )
 
 
 @router.get("/wrong-questions/{user_id}")

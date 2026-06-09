@@ -1,5 +1,5 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react'
-import { DailyTask, plannerApi, PlanTask, StudyPlan, TimeAllocation, WeakPoint } from '../api/planner'
+import { DailyTask, plannerApi, PlanPhase, PlanTask, StudyPlan, TimeAllocation, WeakPoint } from '../api/planner'
 import { sessionStore } from '../api/session'
 import { subjectApi, Subject } from '../api/subject'
 
@@ -18,6 +18,8 @@ const addDays = (date: Date, days: number) => {
   next.setDate(next.getDate() + days)
   return next
 }
+
+const daysBetween = (start: Date, end: Date) => Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000))
 
 const buildCalendarWeeks = (tasks: PlanTask[]) => {
   if (tasks.length === 0) return []
@@ -46,6 +48,28 @@ const buildCalendarWeeks = (tasks: PlanTask[]) => {
     if (weeks.length > 12) break
   }
   return weeks
+}
+
+const buildGanttItems = (phases: PlanPhase[]) => {
+  if (phases.length === 0) return []
+  const starts = phases.map((phase) => new Date(dateKey(phase.start_date)))
+  const ends = phases.map((phase) => new Date(dateKey(phase.end_date)))
+  const start = new Date(Math.min(...starts.map((date) => date.getTime())))
+  const end = new Date(Math.max(...ends.map((date) => date.getTime())))
+  const totalDays = Math.max(1, daysBetween(start, end) + 1)
+
+  return phases.map((phase) => {
+    const phaseStart = new Date(dateKey(phase.start_date))
+    const phaseEnd = new Date(dateKey(phase.end_date))
+    const offset = daysBetween(start, phaseStart)
+    const duration = Math.max(1, daysBetween(phaseStart, phaseEnd) + 1)
+    return {
+      ...phase,
+      left: (offset / totalDays) * 100,
+      width: Math.max(6, (duration / totalDays) * 100),
+      duration,
+    }
+  })
 }
 
 const daysUntil = (value: string) => {
@@ -200,6 +224,7 @@ const PlannerPage: React.FC = () => {
   const planTasks = currentPlan?.plan_data.tasks || []
   const planCalendarWeeks = useMemo(() => buildCalendarWeeks(planTasks), [planTasks])
   const planPhases = currentPlan?.plan_data.phases || []
+  const ganttItems = useMemo(() => buildGanttItems(planPhases), [planPhases])
   const weeklyGoals = currentPlan?.plan_data.weekly_goals || []
   const dailyTemplate = currentPlan?.plan_data.daily_template || []
   const milestones = currentPlan?.plan_data.milestones || []
@@ -403,6 +428,44 @@ const PlannerPage: React.FC = () => {
                   ))}
                   {planCalendarWeeks.length === 0 && <div className="text-sm text-slate-500">生成学习计划后展示日历</div>}
                 </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm xl:col-span-2">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">阶段甘特图</h2>
+                <p className="mt-1 text-sm text-slate-500">按时间跨度查看基础、强化、模考和冲刺阶段。</p>
+              </div>
+              <div className="text-sm text-slate-500">{ganttItems.length} 个阶段</div>
+            </div>
+            <div className="mt-5 overflow-x-auto">
+              <div className="min-w-[760px] space-y-4">
+                {ganttItems.map((item, index) => (
+                  <div key={`${item.name}-${item.start_date}`}>
+                    <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                      <div className="font-medium text-slate-800">{item.name}</div>
+                      <div className="text-slate-500">
+                        {formatDate(item.start_date)} - {formatDate(item.end_date)} · {item.duration} 天
+                      </div>
+                    </div>
+                    <div className="relative h-8 rounded-full bg-slate-100">
+                      <div
+                        className={`absolute top-1 h-6 rounded-full ${
+                          index === 0
+                            ? 'bg-blue-500'
+                            : index === ganttItems.length - 1
+                              ? 'bg-red-500'
+                              : 'bg-emerald-500'
+                        }`}
+                        style={{ left: `${item.left}%`, width: `${Math.min(100 - item.left, item.width)}%` }}
+                      />
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-slate-600">{item.goal}</p>
+                  </div>
+                ))}
+                {ganttItems.length === 0 && <div className="text-sm text-slate-500">生成学习计划后展示甘特图</div>}
               </div>
             </div>
           </section>

@@ -1,29 +1,32 @@
-import React from 'react'
+import React, { Suspense } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
-import Home from './pages/Home'
-import ExamPage from './pages/ExamPage'
-import QuestionsPage from './pages/QuestionsPage'
-import VideosPage from './pages/VideosPage'
-import AnalysisPage from './pages/AnalysisPage'
-import PlannerPage from './pages/PlannerPage'
-import FavoritesPage from './pages/FavoritesPage'
-import AuthPage from './pages/AuthPage'
+
+const Home = React.lazy(() => import('./pages/Home'))
+const ExamPage = React.lazy(() => import('./pages/ExamPage'))
+const QuestionsPage = React.lazy(() => import('./pages/QuestionsPage'))
+const VideosPage = React.lazy(() => import('./pages/VideosPage'))
+const AnalysisPage = React.lazy(() => import('./pages/AnalysisPage'))
+const PlannerPage = React.lazy(() => import('./pages/PlannerPage'))
+const FavoritesPage = React.lazy(() => import('./pages/FavoritesPage'))
+const AuthPage = React.lazy(() => import('./pages/AuthPage'))
 
 const App: React.FC = () => {
   return (
     <Router basename={import.meta.env.BASE_URL}>
       <Layout>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/exam" element={<ExamPage />} />
-          <Route path="/questions" element={<QuestionsPage />} />
-          <Route path="/videos" element={<VideosPage />} />
-          <Route path="/analysis" element={<AnalysisPage />} />
-          <Route path="/planner" element={<PlannerPage />} />
-          <Route path="/favorites" element={<FavoritesPage />} />
-          <Route path="/auth" element={<AuthPage />} />
-        </Routes>
+        <Suspense fallback={<div className="rounded-lg bg-blue-50 px-4 py-3 text-blue-700">页面加载中...</div>}>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/exam" element={<ExamPage />} />
+            <Route path="/questions" element={<QuestionsPage />} />
+            <Route path="/videos" element={<VideosPage />} />
+            <Route path="/analysis" element={<AnalysisPage />} />
+            <Route path="/planner" element={<PlannerPage />} />
+            <Route path="/favorites" element={<FavoritesPage />} />
+            <Route path="/auth" element={<AuthPage />} />
+          </Routes>
+        </Suspense>
       </Layout>
     </Router>
   )
