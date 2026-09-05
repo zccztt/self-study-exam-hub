@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { GraphChart } from 'echarts/charts'
-import { TooltipComponent } from 'echarts/components'
-import * as echarts from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
+import echarts from '@/lib/echarts'
 import ReactEChartsCore from 'echarts-for-react/lib/core'
 import {
   analysisApi,
+  AIHotspotAnalysis,
+  AnswerTemplatesResult,
   ChapterHeatmap,
   HotspotAlert,
   HighFrequencyPoint,
@@ -14,12 +13,15 @@ import {
   PointTrend,
   QuestionTypeDistribution,
   ScoreTrend,
+  SprintReport,
   WordCloudItem,
 } from '../api/analysis'
+import { enrollmentApi } from '../api/enrollment'
 import { sessionStore } from '../api/session'
-import { subjectApi, Subject } from '../api/subject'
+import { useEnrolledSubjectFilter } from '../hooks/useEnrolledSubjectFilter'
+import EnrolledSubjectToggle from '../components/EnrolledSubjectToggle'
 
-echarts.use([GraphChart, TooltipComponent, CanvasRenderer])
+// echarts modules are registered in @/lib/echarts
 
 const questionTypeLabels: Record<string, string> = {
   single_choice: '单选题',
@@ -32,7 +34,7 @@ const questionTypeLabels: Record<string, string> = {
 const CURRENT_EXAM_YEAR = new Date().getFullYear()
 
 const AnalysisPage: React.FC = () => {
-  const [subjects, setSubjects] = useState<Subject[]>([])
+  const { subjects, onlyEnrolled, setOnlyEnrolled, hasEnrollments, isLoggedIn } = useEnrolledSubjectFilter()
   const [subjectId, setSubjectId] = useState('')
   const [knowledgeTree, setKnowledgeTree] = useState<KnowledgeTree | null>(null)
   const [highFrequencyPoints, setHighFrequencyPoints] = useState<HighFrequencyPoint[]>([])
@@ -48,6 +50,14 @@ const AnalysisPage: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [trendLoading, setTrendLoading] = useState(false)
   const [error, setError] = useState('')
+  // New: sprint report, AI analysis, answer templates
+  const [sprintReport, setSprintReport] = useState<SprintReport | null>(null)
+  const [sprintLoading, setSprintLoading] = useState(false)
+  const [aiAnalysis, setAiAnalysis] = useState<AIHotspotAnalysis | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [answerTemplates, setAnswerTemplates] = useState<AnswerTemplatesResult | null>(null)
+  const [templatesLoading, setTemplatesLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState<'analysis' | 'sprint' | 'templates'>('analysis')
 
   const loadAnalysis = async (nextSubjectId: number) => {
     setLoading(true)
@@ -99,20 +109,69 @@ const AnalysisPage: React.FC = () => {
   }
 
   useEffect(() => {
+    if (subjects.length === 0 || subjectId) return
     const initialize = async () => {
       try {
-        const subjectData = await subjectApi.list()
-        setSubjects(subjectData)
-        if (subjectData[0]) {
-          setSubjectId(String(subjectData[0].id))
-          await loadAnalysis(subjectData[0].id)
+        const enrollmentData = await enrollmentApi.listEnrollments().catch(() => [])
+
+        // Default to first enrolled remaining subject, or first subject
+        let defaultSubjectId = subjects[0]?.id
+        if (enrollmentData.length > 0) {
+          try {
+            const remaining = await enrollmentApi.getRemainingSubjects(enrollmentData[0].id)
+            if (remaining.length > 0) defaultSubjectId = remaining[0]
+          } catch { /* ignore */ }
+        }
+
+        if (defaultSubjectId) {
+          setSubjectId(String(defaultSubjectId))
+          await loadAnalysis(defaultSubjectId)
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : '初始化考点分析失败')
       }
     }
     void initialize()
-  }, [])
+  }, [subjects])
+
+  const loadSprintReport = async () => {
+    if (!subjectId) return
+    setSprintLoading(true)
+    try {
+      const data = await analysisApi.getSprintReport(sessionStore.getUserId(), Number(subjectId))
+      setSprintReport(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '冲刺报告加载失败')
+    } finally {
+      setSprintLoading(false)
+    }
+  }
+
+  const loadAiAnalysis = async () => {
+    if (!subjectId) return
+    setAiLoading(true)
+    try {
+      const data = await analysisApi.aiAnalyzeHotspots(Number(subjectId))
+      setAiAnalysis(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'AI 分析加载失败（可能受速率限制）')
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  const loadAnswerTemplates = async () => {
+    if (answerTemplates) return // already loaded
+    setTemplatesLoading(true)
+    try {
+      const data = await analysisApi.getAnswerTemplates()
+      setAnswerTemplates(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '答题模板加载失败')
+    } finally {
+      setTemplatesLoading(false)
+    }
+  }
 
   const maxPointFrequency = Math.max(1, ...highFrequencyPoints.map((point) => point.frequency))
   const maxChapterFrequency = Math.max(1, ...(chapterHeatmap?.chapters || []).map((chapter) => chapter.frequency))
@@ -188,25 +247,248 @@ const AnalysisPage: React.FC = () => {
             <h1 className="mt-1 text-3xl font-bold text-slate-950">考点分析</h1>
             <p className="mt-2 text-sm text-slate-500">按章节、频次、题型和趋势拆解重点，选中考点可查看详细作答说明。</p>
           </div>
-        <select
-          value={subjectId}
-          onChange={(event) => {
-            setSubjectId(event.target.value)
-            if (event.target.value) void loadAnalysis(Number(event.target.value))
-          }}
-          className="w-full md:w-80 px-4 py-2 border border-gray-300 rounded-lg bg-white"
-        >
-          {subjects.map((subject) => (
-            <option key={subject.id} value={subject.id}>
-              {subject.name}
-            </option>
-          ))}
-        </select>
+        <div className="flex flex-col gap-2 md:flex-row md:items-center">
+          <EnrolledSubjectToggle
+            onlyEnrolled={onlyEnrolled}
+            setOnlyEnrolled={setOnlyEnrolled}
+            hasEnrollments={hasEnrollments}
+            isLoggedIn={isLoggedIn}
+          />
+          <select
+            value={subjectId}
+            onChange={(event) => {
+              setSubjectId(event.target.value)
+              if (event.target.value) void loadAnalysis(Number(event.target.value))
+            }}
+            className="w-full md:w-80 px-4 py-2 border border-gray-300 rounded-lg bg-white"
+          >
+            {subjects.map((subject) => (
+              <option key={subject.id} value={subject.id}>
+                {subject.name}
+              </option>
+            ))}
+          </select>
+        </div>
         </div>
       </div>
 
       {error && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-red-700">{error}</div>}
       {loading && <div className="mb-4 rounded-lg bg-blue-50 px-4 py-3 text-blue-700">分析数据加载中...</div>}
+
+      {/* Tab navigation */}
+      <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+        {[
+          { key: 'analysis' as const, label: '考点分析' },
+          { key: 'sprint' as const, label: '冲刺报告' },
+          { key: 'templates' as const, label: '答题模板' },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => {
+              setActiveTab(tab.key)
+              if (tab.key === 'sprint' && !sprintReport) loadSprintReport()
+              if (tab.key === 'templates' && !answerTemplates) loadAnswerTemplates()
+            }}
+            className={`flex-1 rounded-md px-4 py-2 text-sm font-medium transition ${
+              activeTab === tab.key ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-white'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Sprint Report Tab */}
+      {activeTab === 'sprint' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold text-slate-900">考前冲刺报告</h2>
+            <div className="flex gap-2">
+              <button
+                onClick={loadSprintReport}
+                disabled={sprintLoading}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-50"
+              >
+                {sprintLoading ? '加载中...' : '刷新'}
+              </button>
+              <button
+                onClick={loadAiAnalysis}
+                disabled={aiLoading}
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {aiLoading ? 'AI 分析中...' : '🤖 AI 深度分析'}
+              </button>
+            </div>
+          </div>
+
+          {sprintReport && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-white p-5">
+                <h3 className="font-semibold text-slate-900">当前评估</h3>
+                <div className="mt-3 space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-slate-500">预估得分</span>
+                    <span className="text-lg font-bold text-blue-600">{sprintReport.current_assessment.estimated_score}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-slate-500">通过概率</span>
+                    <span className="font-medium">{sprintReport.current_assessment.pass_probability.label} ({sprintReport.current_assessment.pass_probability.percent}%)</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-slate-500">近期趋势</span>
+                    <span className="text-sm">{sprintReport.current_assessment.recent_trend}</span>
+                  </div>
+                  {sprintReport.days_remaining != null && (
+                    <div className="flex justify-between">
+                      <span className="text-sm text-slate-500">距考试</span>
+                      <span className="font-bold text-amber-600">{sprintReport.days_remaining} 天</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-5">
+                <h3 className="font-semibold text-slate-900">通过策略</h3>
+                <div className="mt-3 space-y-2">
+                  <div className="text-sm text-slate-500">目标分数：<span className="font-bold text-slate-900">{sprintReport.pass_strategy.target_score}</span></div>
+                  <div className="mt-2">
+                    {sprintReport.pass_strategy.focus_advice.map((advice, i) => (
+                      <div key={i} className="mt-1 flex items-start gap-2 text-sm text-slate-700">
+                        <span className="text-blue-500">•</span> {advice}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {sprintReport.review_checklist.must_review_points.length > 0 && (
+                <div className="md:col-span-2 rounded-xl border border-slate-200 bg-white p-5">
+                  <h3 className="font-semibold text-slate-900 mb-3">必复习考点</h3>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {sprintReport.review_checklist.must_review_points.map((point) => (
+                      <div key={point.point_id} className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2">
+                        <span className="text-sm font-medium text-slate-800">{point.name}</span>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-slate-400">频次{point.frequency}</span>
+                          <span className={point.priority === 'high' ? 'text-red-500 font-bold' : 'text-amber-500'}>
+                            {point.priority === 'high' ? '必考' : '重点'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {aiAnalysis && (
+            <div className="rounded-xl border border-blue-100 bg-blue-50 p-5">
+              <h3 className="flex items-center gap-2 font-semibold text-blue-900">
+                🤖 AI 深度分析
+              </h3>
+              <p className="mt-2 text-sm text-blue-800">{aiAnalysis.summary}</p>
+              {aiAnalysis.top_predictions.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-blue-900 mb-2">重点预测</h4>
+                  <div className="space-y-2">
+                    {aiAnalysis.top_predictions.map((pred, i) => (
+                      <div key={i} className="rounded-lg bg-white/70 p-3">
+                        <div className="flex justify-between">
+                          <span className="font-medium text-slate-900">{pred.name}</span>
+                          <span className="text-xs text-blue-600">置信度 {Math.round(pred.confidence * 100)}%</span>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-600">{pred.reason}</p>
+                        <p className="mt-1 text-xs text-blue-700">💡 {pred.study_tip}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {aiAnalysis.exam_tips.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-blue-900 mb-1">应试技巧</h4>
+                  {aiAnalysis.exam_tips.map((tip, i) => (
+                    <div key={i} className="text-sm text-blue-800">• {tip}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {!sprintReport && !sprintLoading && (
+            <div className="rounded-xl border border-dashed border-slate-300 py-12 text-center text-slate-500">
+              选择科目后点击「刷新」生成冲刺报告
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Answer Templates Tab */}
+      {activeTab === 'templates' && (
+        <div className="space-y-4">
+          <h2 className="text-xl font-semibold text-slate-900">答题模板与技巧</h2>
+          {templatesLoading && <div className="text-slate-400">加载中...</div>}
+          {answerTemplates && (
+            <>
+              {answerTemplates.exam_tips && (
+                <div className="rounded-xl border border-amber-100 bg-amber-50 p-5">
+                  <h3 className="font-semibold text-amber-900">📝 考试提醒</h3>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2 text-sm text-amber-800">
+                    <div>⏱ 时间管理：{answerTemplates.exam_tips.time_management}</div>
+                    <div>📋 答题顺序：{answerTemplates.exam_tips.answer_order}</div>
+                  </div>
+                  {answerTemplates.exam_tips.key_reminders.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {answerTemplates.exam_tips.key_reminders.map((r, i) => (
+                        <div key={i} className="text-sm text-amber-700">• {r}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="grid gap-4 md:grid-cols-2">
+                {Object.values(answerTemplates).filter((v): v is NonNullable<typeof v> => v != null && typeof v === 'object' && 'templates' in v).map((group: any) => (
+                  <div key={group.question_type} className="rounded-xl border border-slate-200 bg-white p-5">
+                    <h3 className="font-semibold text-slate-900">{group.label}</h3>
+                    {group.templates.map((tpl: any, i: number) => (
+                      <div key={i} className="mt-3 rounded-lg border border-slate-100 p-3">
+                        <div className="text-sm font-medium text-slate-800">{tpl.name}</div>
+                        <div className="mt-1 text-xs text-slate-500">结构：{tpl.structure}</div>
+                        {tpl.score_range && <div className="mt-1 text-xs text-blue-600">分值：{tpl.score_range}</div>}
+                        <div className="mt-2 rounded bg-slate-50 p-2 text-xs text-slate-700 whitespace-pre-line">{tpl.example_frame}</div>
+                        {tpl.scoring_tips.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs font-medium text-green-700">得分技巧：</div>
+                            {tpl.scoring_tips.map((tip: string, j: number) => (
+                              <div key={j} className="text-xs text-green-600">• {tip}</div>
+                            ))}
+                          </div>
+                        )}
+                        {tpl.common_mistakes.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-xs font-medium text-red-700">常见错误：</div>
+                            {tpl.common_mistakes.map((m: string, j: number) => (
+                              <div key={j} className="text-xs text-red-600">• {m}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {!answerTemplates && !templatesLoading && (
+            <div className="rounded-xl border border-dashed border-slate-300 py-12 text-center text-slate-500">
+              暂无答题模板数据
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Original analysis content - only show on analysis tab */}
+      {activeTab === 'analysis' && (
+      <>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
         {[
@@ -540,6 +822,8 @@ const AnalysisPage: React.FC = () => {
           {prediction.length === 0 && !loading && <div className="text-gray-500">暂无预测数据</div>}
         </div>
       </div>
+      </>
+      )}
     </div>
   )
 }

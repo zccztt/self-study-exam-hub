@@ -1,42 +1,32 @@
 import type { AuthResult, AuthUser } from './auth'
+import { useAuthStore } from '../stores/useAuthStore'
 
-const TOKEN_KEY = 'token'
-const USER_KEY = 'user'
 const SESSION_CHANGED_EVENT = 'session-changed'
-
-const notifySessionChanged = () => {
-  window.dispatchEvent(new Event(SESSION_CHANGED_EVENT))
-}
 
 export const sessionStore = {
   saveAuth(result: AuthResult) {
-    localStorage.setItem(TOKEN_KEY, result.access_token)
-    localStorage.setItem(USER_KEY, JSON.stringify(result.user))
-    notifySessionChanged()
+    const refreshToken = 'refresh_token' in result
+      ? (result as unknown as { refresh_token: string }).refresh_token
+      : ''
+    useAuthStore.getState().setAuth(result.user, result.access_token, refreshToken)
   },
   clear() {
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(USER_KEY)
-    notifySessionChanged()
+    useAuthStore.getState().logout()
   },
   getUser(): AuthUser | null {
-    const raw = localStorage.getItem(USER_KEY)
-    if (!raw) return null
-    try {
-      return JSON.parse(raw) as AuthUser
-    } catch {
-      return null
-    }
+    return useAuthStore.getState().user
   },
   getToken() {
-    return localStorage.getItem(TOKEN_KEY)
+    return useAuthStore.getState().token
+  },
+  getRefreshToken() {
+    return useAuthStore.getState().refreshToken
   },
   saveUser(user: AuthUser) {
-    localStorage.setItem(USER_KEY, JSON.stringify(user))
-    notifySessionChanged()
+    useAuthStore.getState().setUser(user)
   },
   getUserId(defaultUserId = 1) {
-    return sessionStore.getUser()?.id || defaultUserId
+    return useAuthStore.getState().getUserId(defaultUserId)
   },
   eventName: SESSION_CHANGED_EVENT,
 }

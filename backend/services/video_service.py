@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 from backend.models.favorite import VideoFavorite
 from backend.models.question import Question
 from backend.models.subject import Subject
-from backend.models.chapter import Chapter
-from backend.models.video import Video, VideoQuestion, VideoSource
+from backend.models.chapter import Chapter, KnowledgePoint
+from backend.models.video import Video, VideoKnowledgePoint, VideoQuestion, VideoSource
 
 
 class VideoService:
@@ -66,6 +66,7 @@ class VideoService:
         subject_id: Optional[int] = None,
         chapter_ids: Optional[List[int]] = None,
         source: Optional[str] = None,
+        online_search: bool = False,
         page: int = 1,
         page_size: int = 20,
     ) -> Dict[str, Any]:
@@ -74,7 +75,7 @@ class VideoService:
 
         total = query.count()
         online_saved_count = 0
-        if total == 0 and page == 1:
+        if total == 0 and page == 1 and online_search:
             online_saved_count = self._search_and_save_online_videos(
                 keyword=keyword,
                 subject_id=subject_id,
@@ -97,7 +98,7 @@ class VideoService:
             "page": page,
             "page_size": page_size,
             "online_saved_count": online_saved_count,
-            "online_searched": total == 0 or online_saved_count > 0,
+            "online_searched": online_search and (total == 0 or online_saved_count > 0),
             "message": (
                 f"本地无匹配视频，已线上搜索并保存 {online_saved_count} 个真实视频链接。"
                 if online_saved_count
@@ -113,7 +114,29 @@ class VideoService:
             return None
         data = self._serialize_video(video)
         data["related_questions"] = self.get_related_questions(video_id)
+        data["knowledge_points"] = self.get_video_knowledge_points(video_id)
         return data
+
+    def get_video_knowledge_points(self, video_id: int) -> List[Dict[str, Any]]:
+        points = (
+            self.db.query(KnowledgePoint, Chapter.name.label("chapter_name"))
+            .join(VideoKnowledgePoint, KnowledgePoint.id == VideoKnowledgePoint.knowledge_point_id)
+            .join(Chapter, KnowledgePoint.chapter_id == Chapter.id)
+            .filter(VideoKnowledgePoint.video_id == video_id)
+            .order_by(KnowledgePoint.frequency.desc(), KnowledgePoint.id.asc())
+            .all()
+        )
+        return [
+            {
+                "id": point.id,
+                "name": point.name,
+                "chapter_id": point.chapter_id,
+                "chapter_name": chapter_name,
+                "importance": point.importance,
+                "frequency": point.frequency,
+            }
+            for point, chapter_name in points
+        ]
 
     def get_related_questions(self, video_id: int) -> List[Dict[str, Any]]:
         questions = (
@@ -184,18 +207,23 @@ class VideoService:
     def get_favorites(self, user_id: int, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
         self._deactivate_invalid_videos()
         query = (
-            self.db.query(Video)
+            self.db.query(Video, VideoFavorite.note)
             .join(VideoFavorite, Video.id == VideoFavorite.video_id)
             .filter(VideoFavorite.user_id == user_id, Video.is_active == 1)
             .order_by(VideoFavorite.created_at.desc())
         )
         total = query.count()
-        videos = query.offset((page - 1) * page_size).limit(page_size).all()
+        rows = query.offset((page - 1) * page_size).limit(page_size).all()
+        items = []
+        for video, favorite_note in rows:
+            item = self._serialize_video(video)
+            item["favorite_note"] = favorite_note
+            items.append(item)
         return {
             "total": total,
             "page": page,
             "page_size": page_size,
-            "items": [self._serialize_video(video) for video in videos],
+            "items": items,
         }
 
     def _build_search_query(

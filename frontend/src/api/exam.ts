@@ -2,7 +2,7 @@ import apiClient, { unwrap } from './client'
 import { Question } from './question'
 import { sessionStore } from './session'
 
-export type ExamMode = 'real_exam' | 'random' | 'chapter' | 'wrong_questions'
+export type ExamMode = 'real_exam' | 'random' | 'chapter' | 'wrong_questions' | 'weak_point'
 
 export interface GeneratePaperParams {
   subject_id: number
@@ -54,6 +54,12 @@ export interface ExamSession {
   end_time: string
   duration: number
   status: string
+}
+
+export interface ExamSessionDetail extends ExamHistoryItem {
+  duration: number
+  paper: GeneratedPaper
+  result?: ScoreResult
 }
 
 export interface ExamHistoryItem {
@@ -161,7 +167,30 @@ const serializeWrongQuestionParams = (params: WrongQuestionParams) => ({
   page_size: params.page_size,
 })
 
+export interface WeakPoint {
+  point_id: number
+  name: string
+  description: string
+  chapter_id: number
+  subject_id: number
+  mastery_level: number
+  correct_count: number
+  wrong_count: number
+  priority: 'high' | 'medium'
+}
+
+export interface WeakPointResult {
+  items: WeakPoint[]
+  total: number
+}
+
 export const examApi = {
+  getWeakPoints: (userId = sessionStore.getUserId(), subjectId?: number) =>
+    unwrap<WeakPointResult>(
+      apiClient.get(`/exam/weak-points/${userId}`, {
+        params: subjectId ? { subject_id: subjectId } : {},
+      }),
+    ),
   generatePaper: (params: GeneratePaperParams) =>
     unwrap<GeneratedPaper>(apiClient.post('/exam/generate', params, { timeout: 120000 })),
   startExam: (examId: number, userId = sessionStore.getUserId()) =>
@@ -175,6 +204,8 @@ export const examApi = {
       }),
     ),
   submitPaper: (sessionId: string) => unwrap<ScoreResult>(apiClient.post(`/exam/submit/${sessionId}`)),
+  getSession: (sessionId: string) => unwrap<ExamSessionDetail>(apiClient.get(`/exam/session/${sessionId}`)),
+  cancelSession: (sessionId: string) => unwrap<ExamHistoryItem>(apiClient.delete(`/exam/session/${sessionId}`)),
   getHistory: (userId = sessionStore.getUserId(), page = 1, pageSize = 20) =>
     unwrap<ExamHistoryResult>(
       apiClient.get(`/exam/history/${userId}`, {

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Study plan service."""
 
+import json
+import logging
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -15,6 +17,8 @@ from backend.models.question import Question
 from backend.models.video import Video
 from backend.services.analysis_service import AnalysisService
 
+logger = logging.getLogger(__name__)
+
 
 class PlannerService:
     def __init__(self, db: Session):
@@ -27,6 +31,7 @@ class PlannerService:
         subjects: List[int],
         daily_hours: float,
         preferences: Optional[Dict[str, Any]] = None,
+        user_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         preferences = preferences or {}
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -35,8 +40,9 @@ class PlannerService:
             subject_id: self.identify_weak_points(user_id, subject_id)
             for subject_id in subjects
         }
+        analysis_svc = AnalysisService(self.db)
         high_freq_by_subject = {
-            subject_id: AnalysisService(self.db).get_high_frequency_points(subject_id, limit=20)
+            subject_id: analysis_svc.get_high_frequency_points(subject_id, limit=20)
             for subject_id in subjects
         }
         due_reviews_by_date = self._due_reviews_by_date(user_id, subjects, today, days)
@@ -67,10 +73,36 @@ class PlannerService:
         )
         expected_pass_rate = self._estimate_pass_rate(days, daily_hours, weak_points_by_subject)
 
+        # If user provided personal context, generate AI advice and include in plan
+        ai_advice = None
+        if user_context:
+            from backend.models.subject import Subject as SubjectModel
+            subject_names = [
+                row.name
+                for row in self.db.query(SubjectModel).filter(SubjectModel.id.in_(subjects)).all()
+            ]
+            all_weak = [point for points in weak_points_by_subject.values() for point in points]
+            ai_advice = self.generate_ai_advice(
+                user_context=user_context,
+                exam_date=exam_date,
+                subject_names=subject_names,
+                daily_hours=daily_hours,
+                weak_points=all_weak[:10],
+            )
+
         self.db.query(StudyPlan).filter(
             StudyPlan.user_id == user_id,
             StudyPlan.status == "active",
         ).update({"status": "archived"})
+
+        plan_data_dict = {
+            "tasks": tasks,
+            "days": days,
+            "allocation": allocation,
+            **plan_system,
+        }
+        if ai_advice:
+            plan_data_dict["ai_advice"] = ai_advice
 
         plan = StudyPlan(
             user_id=user_id,
@@ -78,34 +110,143 @@ class PlannerService:
             daily_hours=daily_hours,
             subjects=subjects,
             preferences=preferences,
-            plan_data={
-                "tasks": tasks,
-                "days": days,
-                "allocation": allocation,
-                **plan_system,
-            },
+            user_context=user_context,
+            plan_data=plan_data_dict,
             expected_pass_rate=round(expected_pass_rate, 2),
         )
         self.db.add(plan)
         self.db.commit()
         self.db.refresh(plan)
 
-        for task in tasks[: min(days, 30)]:
-            self.db.add(
-                DailyTask(
-                    plan_id=plan.id,
-                    user_id=user_id,
-                    task_date=datetime.fromisoformat(task["date"]),
-                    subject_id=task["subject_id"],
-                    chapter_ids=task["chapter_ids"],
-                    question_count=task["question_count"],
-                    video_ids=task["video_ids"],
-                    review_points=task["review_points"],
-                )
+        task_objects = [
+            DailyTask(
+                plan_id=plan.id,
+                user_id=user_id,
+                task_date=datetime.fromisoformat(task["date"]),
+                subject_id=task["subject_id"],
+                chapter_ids=task["chapter_ids"],
+                question_count=task["question_count"],
+                video_ids=task["video_ids"],
+                review_points=task["review_points"],
             )
+            for task in tasks
+        ]
+        self.db.add_all(task_objects)
         self.db.commit()
 
         return self._serialize_plan(plan)
+
+    def generate_ai_advice(
+        self,
+        user_context: str,
+        exam_date: Optional[datetime] = None,
+        subject_names: Optional[List[str]] = None,
+        daily_hours: Optional[float] = None,
+        weak_points: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """调用 AI 生成个性化学习建议。"""
+        from backend.config.ai_config import ai_config
+        from backend.utils.crypto import sanitize_error
+
+        config = ai_config.get_config()
+        if not config:
+            return self._fallback_advice(user_context, exam_date, subject_names, daily_hours, weak_points)
+
+        system_prompt = (
+            "你是一位经验丰富的自学考试备考规划顾问。根据考生的个人情况、报考科目、备考时间和薄弱环节，"
+            "给出有针对性的学习策略建议。\n\n"
+            "要求：\n"
+            "1. 建议必须具体、可执行，避免空泛的鼓励。\n"
+            "2. 根据考生实际情况调整优先级，时间紧迫时应大胆取舍。\n"
+            "3. 薄弱环节建议包含具体的学习方法（如错题归因、概念重建、限时训练等）。\n"
+            "4. 风险提示要实事求是，不回避困难。\n\n"
+            "请只返回 JSON，结构如下：\n"
+            '{"overall_assessment": "总体评估", '
+            '"study_strategy": "学习策略建议", '
+            '"subject_advice": [{"subject": "科目名", "advice": "建议", "priority": "high/medium/low"}], '
+            '"daily_plan_suggestion": "每日学习安排建议", '
+            '"risk_warnings": ["风险提示1", "风险提示2"], '
+            '"motivation": "鼓励语"}'
+        )
+
+        user_parts = [f"考生情况：{user_context}"]
+        if exam_date:
+            days_left = max(0, (exam_date.date() - datetime.now().date()).days)
+            user_parts.append(f"考试日期：{exam_date.strftime('%Y-%m-%d')}（距今 {days_left} 天）")
+        if subject_names:
+            user_parts.append(f"报考科目：{'、'.join(subject_names)}")
+        if daily_hours is not None:
+            user_parts.append(f"每日可用学习时间：{daily_hours} 小时")
+        if weak_points:
+            weak_desc = "; ".join(
+                f"{p.get('name', '未知')}（掌握度 {p.get('mastery_level', '?')}，{p.get('reason', '')}）"
+                for p in weak_points[:10]
+            )
+            user_parts.append(f"薄弱知识点：{weak_desc}")
+
+        user_message = "\n".join(user_parts)
+
+        try:
+            from backend.services.ai_provider_pool import ai_provider_pool
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
+            result = ai_provider_pool.complete_json(
+                messages=messages, role="generate", temperature=0.7,
+            )
+            if result is None:
+                raise RuntimeError("All AI providers failed")
+            # Ensure all expected keys exist
+            for key in ("overall_assessment", "study_strategy", "subject_advice",
+                        "daily_plan_suggestion", "risk_warnings", "motivation"):
+                if key not in result:
+                    result[key] = [] if key in ("subject_advice", "risk_warnings") else ""
+            result["source"] = "ai"
+            return result
+        except Exception as exc:
+            logger.warning("AI advice generation failed: %s", sanitize_error(exc))
+            fallback = self._fallback_advice(user_context, exam_date, subject_names, daily_hours, weak_points)
+            fallback["ai_error"] = sanitize_error(exc)
+            return fallback
+
+    @staticmethod
+    def _fallback_advice(
+        user_context: Optional[str],
+        exam_date: Optional[datetime],
+        subject_names: Optional[List[str]],
+        daily_hours: Optional[float],
+        weak_points: Optional[List[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """当 AI 不可用时返回基于规则的备选建议。"""
+        days_left = max(0, (exam_date.date() - datetime.now().date()).days) if exam_date else None
+        subject_advice = []
+        for name in (subject_names or []):
+            subject_advice.append({"subject": name, "advice": "按章节顺序梳理教材框架，完成高频考点训练题。", "priority": "medium"})
+
+        risk_warnings = []
+        if days_left is not None and days_left < 30:
+            risk_warnings.append("备考周期不足 30 天，建议压缩教材通读时间，优先处理高频考点和错题。")
+        if daily_hours is not None and daily_hours < 2:
+            risk_warnings.append("每日学习时间较短，建议周末补充一次集中训练。")
+        if weak_points and len([p for p in weak_points if p.get("priority") == "high"]) >= 3:
+            risk_warnings.append("高优先级薄弱点较多，前两周应优先安排概念重建和错题复盘。")
+        if not risk_warnings:
+            risk_warnings.append("当前配置较均衡，按计划推进即可。")
+
+        time_desc = f"距考试 {days_left} 天" if days_left is not None else "未设定考试日期"
+        hours_desc = f"每日 {daily_hours} 小时" if daily_hours else "未设定每日时长"
+
+        return {
+            "overall_assessment": f"{time_desc}，{hours_desc}，建议按薄弱优先、高频为主的策略推进。",
+            "study_strategy": "先梳理教材框架，再按章节刷题，最后通过限时模拟查漏补缺。",
+            "subject_advice": subject_advice,
+            "daily_plan_suggestion": "建议将每日学习时间分为三段：概念精读、题目训练、错题复盘。",
+            "risk_warnings": risk_warnings,
+            "motivation": "坚持每天的学习计划，积少成多，你一定能取得好成绩。",
+            "source": "fallback",
+        }
 
     def identify_weak_points(self, user_id: int, subject_id: int) -> List[Dict[str, Any]]:
         mastery_rows = (
@@ -314,9 +455,10 @@ class PlannerService:
         if task_ids:
             tasks = self.db.query(DailyTask).filter(DailyTask.user_id == user_id, DailyTask.id.in_(task_ids)).all()
             for task in tasks:
-                task.is_completed = True
-                task.completion_time = datetime.now()
                 matching_payload = next((item for item in completed_tasks if item.get("id") == task.id), {})
+                is_completed = bool(matching_payload.get("is_completed", True))
+                task.is_completed = is_completed
+                task.completion_time = datetime.now() if is_completed else None
                 if matching_payload.get("actual_hours") is not None:
                     task.actual_hours = float(matching_payload["actual_hours"])
             self.db.commit()
@@ -337,6 +479,14 @@ class PlannerService:
         return {"completion_rate": completion_rate, "completed": done, "total": total}
 
     def get_daily_tasks(self, user_id: int, date: datetime) -> List[Dict[str, Any]]:
+        active_plan = (
+            self.db.query(StudyPlan)
+            .filter(StudyPlan.user_id == user_id, StudyPlan.status == "active")
+            .order_by(StudyPlan.created_at.desc())
+            .first()
+        )
+        if active_plan:
+            self._sync_plan_tasks(active_plan)
         day_start = date.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = day_start + timedelta(days=1)
         tasks = (
@@ -357,6 +507,102 @@ class PlannerService:
             .first()
         )
         return self._serialize_plan(plan) if plan else None
+
+    def get_plan_history(self, user_id: int, page: int = 1, page_size: int = 10) -> Dict[str, Any]:
+        query = (
+            self.db.query(StudyPlan)
+            .filter(StudyPlan.user_id == user_id)
+            .order_by(StudyPlan.created_at.desc(), StudyPlan.id.desc())
+        )
+        total = query.count()
+        plans = query.offset((page - 1) * page_size).limit(page_size).all()
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "items": [self._serialize_plan_summary(plan) for plan in plans],
+        }
+
+    def activate_plan(self, user_id: int, plan_id: int) -> Dict[str, Any]:
+        plan = (
+            self.db.query(StudyPlan)
+            .filter(StudyPlan.id == plan_id, StudyPlan.user_id == user_id)
+            .first()
+        )
+        if not plan:
+            raise ValueError("Study plan not found.")
+        if plan.exam_date.date() <= datetime.now().date():
+            raise ValueError("An expired study plan cannot be activated.")
+
+        self.db.query(StudyPlan).filter(
+            StudyPlan.user_id == user_id,
+            StudyPlan.id != plan_id,
+            StudyPlan.status == "active",
+        ).update({"status": "archived"})
+        plan.status = "active"
+        self._sync_plan_tasks(plan)
+        total = self.db.query(DailyTask).filter(DailyTask.plan_id == plan.id).count()
+        completed = (
+            self.db.query(DailyTask)
+            .filter(DailyTask.plan_id == plan.id, DailyTask.is_completed.is_(True))
+            .count()
+        )
+        plan.completion_rate = round(completed / total * 100, 2) if total else 0
+        self.db.commit()
+        self.db.refresh(plan)
+        return self._serialize_plan(plan)
+
+    def delete_archived_plan(self, user_id: int, plan_id: int) -> bool:
+        plan = (
+            self.db.query(StudyPlan)
+            .filter(StudyPlan.id == plan_id, StudyPlan.user_id == user_id)
+            .first()
+        )
+        if not plan:
+            raise ValueError("Study plan not found.")
+        if plan.status == "active":
+            raise ValueError("The active study plan cannot be deleted.")
+
+        self.db.query(DailyTask).filter(DailyTask.plan_id == plan.id).delete(synchronize_session=False)
+        self.db.delete(plan)
+        self.db.commit()
+        return True
+
+    def _sync_plan_tasks(self, plan: StudyPlan) -> int:
+        planned_tasks = (plan.plan_data or {}).get("tasks") or []
+        if not planned_tasks:
+            return 0
+        existing = {
+            (task.task_date.date().isoformat(), task.subject_id)
+            for task in self.db.query(DailyTask).filter(DailyTask.plan_id == plan.id).all()
+        }
+        created = 0
+        for task in planned_tasks:
+            raw_date = str(task.get("date") or "")
+            try:
+                normalized_date = datetime.fromisoformat(raw_date).date().isoformat()
+            except ValueError:
+                continue
+            key = (normalized_date, int(task.get("subject_id") or 0))
+            if not key[0] or not key[1] or key in existing:
+                continue
+            self.db.add(
+                DailyTask(
+                    plan_id=plan.id,
+                    user_id=plan.user_id,
+                    task_date=datetime.fromisoformat(normalized_date),
+                    subject_id=key[1],
+                    chapter_ids=task.get("chapter_ids") or [],
+                    question_count=int(task.get("question_count") or 0),
+                    video_ids=task.get("video_ids") or [],
+                    review_points=task.get("review_points") or [],
+                )
+            )
+            existing.add(key)
+            created += 1
+        if created:
+            self.db.commit()
+        return created
 
     def _build_daily_tasks(
         self,
@@ -781,6 +1027,20 @@ class PlannerService:
             "subjects": plan.subjects,
             "preferences": plan.preferences or {},
             "plan_data": plan.plan_data or {},
+            "status": plan.status,
+            "completion_rate": plan.completion_rate,
+            "expected_pass_rate": plan.expected_pass_rate,
+            "created_at": plan.created_at.isoformat() if plan.created_at else None,
+        }
+
+    @staticmethod
+    def _serialize_plan_summary(plan: StudyPlan) -> Dict[str, Any]:
+        return {
+            "id": plan.id,
+            "user_id": plan.user_id,
+            "exam_date": plan.exam_date.isoformat(),
+            "daily_hours": plan.daily_hours,
+            "subjects": plan.subjects or [],
             "status": plan.status,
             "completion_rate": plan.completion_rate,
             "expected_pass_rate": plan.expected_pass_rate,

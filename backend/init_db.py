@@ -681,7 +681,7 @@ def seed_demo_data() -> None:
 if __name__ == "__main__":
     print("Initializing database schema...")
     init_database()
-    print(f"Ensuring demo account: {DEMO_USERNAME} / {DEMO_PASSWORD}")
+    print(f"Ensuring demo account: {DEMO_USERNAME} / {'*' * len(DEMO_PASSWORD)}")
     print("Upgrading 2026 demo data...")
     seed_demo_data()
     print("Initializing Elasticsearch index if available...")

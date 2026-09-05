@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Favorite models."""
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from backend.models import Base
@@ -9,6 +9,7 @@ from backend.models import Base
 
 class QuestionFavorite(Base):
     __tablename__ = "question_favorites"
+    __table_args__ = (UniqueConstraint("user_id", "question_id", name="uq_question_favorites_user_question"),)
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
@@ -23,6 +24,7 @@ class QuestionFavorite(Base):
 
 class VideoFavorite(Base):
     __tablename__ = "video_favorites"
+    __table_args__ = (UniqueConstraint("user_id", "video_id", name="uq_video_favorites_user_video"),)
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)

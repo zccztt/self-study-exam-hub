@@ -9,6 +9,19 @@ from sqlalchemy.sql import func
 from backend.models import Base
 
 
+# 答案缺失的占位标记。带此标记的题目可用于题库浏览和练习，但不参与需要评分的考试。
+PENDING_ANSWER_MARKER = "待核实"
+
+
+class AnswerSource(str, enum.Enum):
+    """答案来源，用于区分答案可信度。"""
+
+    CRAWLED = "crawled"              # 采集时即带答案
+    STEM_EXTRACTED = "stem_extracted"  # 从题干误拼的字母中恢复
+    DB_MATCHED = "db_matched"        # 由库内重复题互补得到
+    PENDING = "pending"              # 答案缺失
+
+
 class QuestionType(str, enum.Enum):
     SINGLE_CHOICE = "single_choice"
     MULTIPLE_CHOICE = "multiple_choice"
@@ -41,6 +54,13 @@ class Question(Base):
     frequency = Column(Integer, default=1, nullable=False)
     score = Column(Integer, default=2, nullable=False)
     source = Column(String(200))
+    source_url = Column(String(500))
+    answer_source = Column(
+        String(20),
+        default="crawled",
+        index=True,
+        comment="答案来源: crawled/stem_extracted/db_matched/pending",
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

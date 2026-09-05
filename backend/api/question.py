@@ -7,15 +7,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.api.dependencies import get_current_user, get_optional_current_user
 from backend.database import get_db
 from backend.elasticsearch_client import es_client
+from backend.models.user import User
 from backend.services.question_service import QuestionService
 
 router = APIRouter(prefix="/questions", tags=["questions"])
 
 
 class AddToFavoritesRequest(BaseModel):
-    user_id: int = 1
     question_id: int
     tags: Optional[List[str]] = None
 
@@ -47,6 +48,7 @@ async def search_questions(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     service = QuestionService(db, es_client)
     result = service.search_questions(
@@ -62,6 +64,7 @@ async def search_questions(
         online_search=online_search,
         page=page,
         page_size=page_size,
+        user_id=current_user.id if current_user else None,
     )
     return {"code": 0, "data": result}
 
@@ -77,9 +80,13 @@ async def get_high_frequency_questions(
 
 
 @router.post("/favorites")
-async def add_to_favorites(request: AddToFavoritesRequest, db: Session = Depends(get_db)):
+async def add_to_favorites(
+    request: AddToFavoritesRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     service = QuestionService(db, es_client)
-    success = service.add_to_favorites(request.user_id, request.question_id, request.tags)
+    success = service.add_to_favorites(current_user.id, request.question_id, request.tags)
     if not success:
         raise HTTPException(status_code=404, detail="Question not found.")
     return {"code": 0, "data": {"success": True}}
@@ -91,13 +98,23 @@ async def get_favorites(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    from backend.api.dependencies import require_self
+    require_self(user_id, current_user)
     service = QuestionService(db, es_client)
     return {"code": 0, "data": service.get_favorites(user_id, page, page_size)}
 
 
 @router.delete("/favorites/{user_id}/{question_id}")
-async def remove_from_favorites(user_id: int, question_id: int, db: Session = Depends(get_db)):
+async def remove_from_favorites(
+    user_id: int,
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from backend.api.dependencies import require_self
+    require_self(user_id, current_user)
     service = QuestionService(db, es_client)
     success = service.remove_from_favorites(user_id, question_id)
     if not success:
@@ -106,9 +123,13 @@ async def remove_from_favorites(user_id: int, question_id: int, db: Session = De
 
 
 @router.get("/{question_id}")
-async def get_question_detail(question_id: int, db: Session = Depends(get_db)):
+async def get_question_detail(
+    question_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
+):
     service = QuestionService(db, es_client)
-    result = service.get_question_detail(question_id)
+    result = service.get_question_detail(question_id, user_id=current_user.id if current_user else None)
     if not result:
         raise HTTPException(status_code=404, detail="Question not found.")
     return {"code": 0, "data": result}

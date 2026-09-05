@@ -204,4 +204,124 @@ export const analysisApi = {
         params: { subject_id: subjectId, limit },
       }),
     ),
+  aiAnalyzeHotspots: (subjectId: number) =>
+    unwrap<AIHotspotAnalysis>(apiClient.get(`/analysis/ai-hotspots/${subjectId}`, { timeout: 60000 })),
+  getAnswerTemplates: () =>
+    unwrap<AnswerTemplatesResult>(apiClient.get('/analysis/templates')),
+  getTemplateByType: (questionType: string, category = 'default') =>
+    unwrap<AnswerTemplate>(
+      apiClient.get(`/analysis/templates/${questionType}`, { params: { category } }),
+    ),
+  getSprintReport: (userId: number, subjectId: number, examDate?: string) =>
+    unwrap<SprintReport>(
+      apiClient.get(`/analysis/sprint-report/${userId}/${subjectId}`, {
+        params: examDate ? { exam_date: examDate } : {},
+      }),
+    ),
+}
+
+export interface AIHotspotPrediction {
+  name: string
+  confidence: number
+  reason: string
+  study_tip: string
+}
+
+export interface AIHotspotAnalysis {
+  subject_id: number
+  subject_name: string
+  ai_powered: boolean
+  summary: string
+  top_predictions: AIHotspotPrediction[]
+  weak_areas: string[]
+  study_plan: string[]
+  exam_tips: string[]
+  raw_hotspots: HotspotAlert[]
+  raw_high_points: HighFrequencyPoint[]
+}
+
+// Answer template types
+export interface AnswerTemplate {
+  name: string
+  question_type: string
+  question_type_label: string
+  category: string
+  structure: string
+  scoring_tips: string[]
+  example_frame: string
+  common_mistakes: string[]
+  score_range?: string
+}
+
+export interface AnswerTemplateGroup {
+  question_type: string
+  label: string
+  templates: AnswerTemplate[]
+}
+
+export interface AnswerTemplatesResult {
+  fill_blank?: AnswerTemplateGroup
+  short_answer?: AnswerTemplateGroup
+  essay?: AnswerTemplateGroup
+  case?: AnswerTemplateGroup
+  exam_tips: {
+    time_management: string
+    answer_order: string
+    key_reminders: string[]
+  }
+}
+
+// Sprint report types
+export interface SprintReport {
+  generated_at: string
+  subject_id: number
+  exam_date: string | null
+  days_remaining: number | null
+  current_assessment: {
+    estimated_score: number
+    pass_probability: {
+      level: string
+      label: string
+      percent: number
+      description: string
+    }
+    recent_trend: string
+    total_practice_count: number
+    unmastered_wrong_count: number
+  }
+  pass_strategy: {
+    target_score: number
+    priority_order: string[]
+    focus_advice: string[]
+    guaranteed_minimum: string
+  }
+  review_checklist: {
+    must_review_points: Array<{
+      point_id: number
+      name: string
+      frequency: number
+      importance: string
+      mastery_level: number
+      priority: string
+    }>
+    type_weakness: Array<{
+      question_type: string
+      label: string
+      total_count: number
+      correct_count: number
+      accuracy: number
+      score_rate: number
+    }>
+    unmastered_wrong_count: number
+  }
+  time_allocation: {
+    strategy: string
+    details: string
+    allocation: Array<{ item: string; percent: number }>
+  }
+  exam_tips: {
+    time_management: string
+    answer_order: string
+    key_reminders: string[]
+  }
 }

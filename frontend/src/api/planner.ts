@@ -21,11 +21,21 @@ export interface StudyPlan {
     review_schedule?: ReviewScheduleItem[]
     resource_strategy?: Array<{ type: string; action: string }>
     risk_alerts?: string[]
+    ai_advice?: AIAdvice
   }
   status: string
   completion_rate: number
   expected_pass_rate?: number
   created_at?: string
+}
+
+export type StudyPlanSummary = Omit<StudyPlan, 'preferences' | 'plan_data'>
+
+export interface StudyPlanHistoryResult {
+  total: number
+  page: number
+  page_size: number
+  items: StudyPlanSummary[]
 }
 
 export interface FocusBlock {
@@ -130,15 +140,41 @@ export interface TimeAllocation {
   high_frequency_points: Array<Record<string, unknown>>
 }
 
+export interface AIAdvice {
+  overall_assessment: string
+  study_strategy: string
+  subject_advice: Array<{ subject: string; advice: string; priority: string }>
+  daily_plan_suggestion: string
+  risk_warnings: string[]
+  motivation: string
+  error?: string
+}
+
 export const plannerApi = {
   generatePlan: (params: {
     user_id?: number
     exam_date: string
-    subjects: number[]
+    subjects?: number[]
     daily_hours: number
     preferences?: Record<string, unknown>
+    enrollment_id?: number
+    user_context?: string
   }) => unwrap<StudyPlan>(apiClient.post('/planner/generate', { user_id: sessionStore.getUserId(), ...params })),
+  getAIAdvice: (params: {
+    user_context: string
+    exam_date?: string
+    subjects?: number[]
+    daily_hours?: number
+  }) => unwrap<AIAdvice>(apiClient.post('/planner/ai-advice', { user_id: sessionStore.getUserId(), ...params })),
   getLatestPlan: (userId = sessionStore.getUserId()) => unwrap<StudyPlan | null>(apiClient.get(`/planner/latest/${userId}`)),
+  getPlanHistory: (userId = sessionStore.getUserId(), page = 1, pageSize = 10) =>
+    unwrap<StudyPlanHistoryResult>(
+      apiClient.get(`/planner/plans/${userId}`, { params: { page, page_size: pageSize } }),
+    ),
+  activatePlan: (planId: number, userId = sessionStore.getUserId()) =>
+    unwrap<StudyPlan>(apiClient.post(`/planner/plans/${userId}/${planId}/activate`)),
+  deletePlan: (planId: number, userId = sessionStore.getUserId()) =>
+    unwrap<{ success: boolean }>(apiClient.delete(`/planner/plans/${userId}/${planId}`)),
   getDailyTasks: (userId = sessionStore.getUserId(), date?: string) =>
     unwrap<DailyTask[]>(
       apiClient.get(`/planner/daily-tasks/${userId}`, {
@@ -147,7 +183,7 @@ export const plannerApi = {
     ),
   getWeakPoints: (subjectId: number, userId = sessionStore.getUserId()) =>
     unwrap<WeakPoint[]>(apiClient.get(`/planner/weak-points/${userId}/${subjectId}`)),
-  updateProgress: (completedTasks: Array<{ id: number; actual_hours?: number }>, userId = sessionStore.getUserId()) =>
+  updateProgress: (completedTasks: Array<{ id: number; is_completed?: boolean; actual_hours?: number }>, userId = sessionStore.getUserId()) =>
     unwrap<ProgressResult>(
       apiClient.post('/planner/progress', {
         user_id: userId,

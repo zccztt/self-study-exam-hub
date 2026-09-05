@@ -14,6 +14,7 @@ export interface VideoItem {
   thumbnail?: string
   description?: string
   tags: string[]
+  favorite_note?: string
 }
 
 export interface RelatedVideoQuestion {
@@ -53,10 +54,10 @@ const serializeParams = (params: SearchVideosParams) => ({
 })
 
 export const videoApi = {
-  searchVideos: (params: SearchVideosParams) =>
-    unwrap<VideoSearchResult>(apiClient.get('/videos', { params: serializeParams(params) })),
+  searchVideos: (params: SearchVideosParams, signal?: AbortSignal) =>
+    unwrap<VideoSearchResult>(apiClient.get('/videos', { params: serializeParams(params), signal })),
   getVideoDetail: (videoId: number) => unwrap<VideoDetail>(apiClient.get(`/videos/${videoId}`)),
-  addToFavorites: (videoId: number, note?: string, userId = sessionStore.getUserId()) =>
+  addFavorite: (videoId: number, note?: string, userId = sessionStore.getUserId()) =>
     unwrap<{ success: boolean }>(
       apiClient.post('/videos/favorites', {
         user_id: userId,
@@ -64,7 +65,7 @@ export const videoApi = {
         note,
       }),
     ),
-  removeFromFavorites: (videoId: number, userId = sessionStore.getUserId()) =>
+  removeFavorite: (videoId: number, userId = sessionStore.getUserId()) =>
     unwrap<{ success: boolean }>(apiClient.delete(`/videos/favorites/${userId}/${videoId}`)),
   getFavorites: (userId = sessionStore.getUserId(), page = 1, pageSize = 20) =>
     unwrap<VideoSearchResult>(
@@ -72,4 +73,11 @@ export const videoApi = {
         params: { page, page_size: pageSize },
       }),
     ),
+  // Aliases for backward compat
+  addToFavorites: (videoId: number, note?: string, userId = sessionStore.getUserId()) =>
+    unwrap<{ success: boolean }>(
+      apiClient.post('/videos/favorites', { user_id: userId, video_id: videoId, note }),
+    ),
+  removeFromFavorites: (videoId: number, userId = sessionStore.getUserId()) =>
+    unwrap<{ success: boolean }>(apiClient.delete(`/videos/favorites/${userId}/${videoId}`)),
 }

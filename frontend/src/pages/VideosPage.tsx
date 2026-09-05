@@ -1,6 +1,8 @@
-import React, { FormEvent, useEffect, useState } from 'react'
+import React, { FormEvent, useEffect, useRef, useState } from 'react'
 import { Chapter, subjectApi, Subject } from '../api/subject'
 import { videoApi, VideoDetail, VideoSearchResult } from '../api/video'
+import { enrollmentApi, EnrollmentListItem } from '../api/enrollment'
+import Pagination from '../components/ui/Pagination'
 
 const sourceLabels: Record<string, string> = {
   bilibili: 'B站',
@@ -32,6 +34,7 @@ const formatViews = (count: number) => {
 }
 
 const VideosPage: React.FC = () => {
+  const abortRef = useRef<AbortController | null>(null)
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [subjectId, setSubjectId] = useState('')
   const [chapters, setChapters] = useState<Chapter[]>([])
@@ -44,12 +47,15 @@ const VideosPage: React.FC = () => {
   const [favoriteStatus, setFavoriteStatus] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [enrolledSubjectIds, setEnrolledSubjectIds] = useState<number[]>([])
+  const [enrolledFilter, setEnrolledFilter] = useState(false)
 
   const pageSize = 12
   const currentPage = result?.page || 1
-  const totalPages = Math.max(1, Math.ceil((result?.total || 0) / pageSize))
 
   const loadVideos = async (page = 1) => {
+    abortRef.current?.abort()
+    abortRef.current = new AbortController()
     setLoading(true)
     setError('')
     try {
@@ -60,9 +66,10 @@ const VideosPage: React.FC = () => {
         source: source || undefined,
         page,
         page_size: pageSize,
-      })
+      }, abortRef.current.signal)
       setResult(data)
     } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || err.message === 'canceled')) return
       setError(err instanceof Error ? err.message : '视频加载失败')
     } finally {
       setLoading(false)
@@ -72,12 +79,27 @@ const VideosPage: React.FC = () => {
   useEffect(() => {
     const initialize = async () => {
       try {
-        const [subjectData, videoData] = await Promise.all([
+        const [subjectData, videoData, enrollmentData] = await Promise.all([
           subjectApi.list(),
           videoApi.searchVideos({ page: 1, page_size: pageSize }),
+          enrollmentApi.listEnrollments().catch(() => [] as EnrollmentListItem[]),
         ])
         setSubjects(subjectData)
         setResult(videoData)
+
+        // Pre-load enrolled subject IDs for filtering
+        if (enrollmentData.length > 0) {
+          try {
+            const ids = await enrollmentApi.getRemainingSubjects(enrollmentData[0].id)
+            setEnrolledSubjectIds(ids)
+            if (ids.length > 0) {
+              setEnrolledFilter(true)
+              setSubjectId(String(ids[0]))
+            }
+          } catch {
+            // ignore
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : '初始化视频中心失败')
       }
@@ -149,6 +171,19 @@ const VideosPage: React.FC = () => {
       </div>
 
       <form onSubmit={handleSearch} className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm mb-6">
+        {enrolledSubjectIds.length > 0 && (
+          <div className="mb-3 flex items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-blue-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enrolledFilter}
+                onChange={(e) => setEnrolledFilter(e.target.checked)}
+                className="rounded"
+              />
+              只显示我的报考科目
+            </label>
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <select
             value={subjectId}
@@ -156,7 +191,9 @@ const VideosPage: React.FC = () => {
             className="px-4 py-2 border border-gray-300 rounded-lg"
           >
             <option value="">全部科目</option>
-            {subjects.map((subject) => (
+            {subjects
+              .filter((subject) => !enrolledFilter || enrolledSubjectIds.includes(subject.id))
+              .map((subject) => (
               <option key={subject.id} value={subject.id}>
                 {subject.name}
               </option>
@@ -207,8 +244,7 @@ const VideosPage: React.FC = () => {
       {error && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-red-700">{error}</div>}
 
       <div className="mb-4 text-sm text-gray-600">
-        共 {result?.total || 0} 个视频，当前第 {currentPage} / {totalPages} 页
-        {result?.online_saved_count ? ` · 线上补充并保存 ${result.online_saved_count} 个` : ''}
+        {result?.online_saved_count ? `线上补充并保存 ${result.online_saved_count} 个` : ''}
       </div>
       {result?.message && <div className="mb-4 rounded-lg bg-blue-50 px-4 py-3 text-sm text-blue-700">{result.message}</div>}
 
@@ -306,27 +342,14 @@ const VideosPage: React.FC = () => {
         <div className="bg-white rounded-lg shadow p-8 text-center text-gray-500">没有找到匹配视频</div>
       )}
 
-      <div className="mt-8 flex justify-center gap-2">
-        <button
-          type="button"
-          className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={currentPage <= 1 || loading}
-          onClick={() => void loadVideos(currentPage - 1)}
-        >
-          上一页
-        </button>
-        <button className="px-4 py-2 bg-blue-500 text-white rounded" type="button">
-          {currentPage}
-        </button>
-        <button
-          type="button"
-          className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={currentPage >= totalPages || loading}
-          onClick={() => void loadVideos(currentPage + 1)}
-        >
-          下一页
-        </button>
-      </div>
+      <Pagination
+        current={currentPage}
+        total={result?.total || 0}
+        pageSize={pageSize}
+        loading={loading}
+        onChange={(page) => void loadVideos(page)}
+        className="mt-8"
+      />
     </div>
   )
 }

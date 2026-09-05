@@ -14,14 +14,19 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.models.chapter import Chapter, KnowledgePoint, QuestionKnowledgePoint
 from backend.models.exam import Exam, ExamMode, ExamSession, ExamStatus, WrongQuestion
 from backend.models.planner import UserMastery
-from backend.models.question import Difficulty, Question, QuestionType
+from backend.models.question import (
+    PENDING_ANSWER_MARKER,
+    Difficulty,
+    Question,
+    QuestionType,
+)
 from backend.models.subject import Subject
 from backend.redis_client import RedisClient
 from backend.services.online_question_provider import (
@@ -97,11 +102,19 @@ class ExamEngine:
         config["duration"] = duration
         selected_year = None
         if mode != ExamMode.WRONG_QUESTIONS.value:
+            explicit_year = config.get("year") not in (None, "")
             selected_year = self._resolve_exam_year(config)
+            if not explicit_year:
+                # 用户未指定年份时，最新年份往往答案尚未公开，改选可用题最多的年份
+                best_year = self._best_answered_year(subject_id, requested_limit)
+                if best_year:
+                    selected_year = best_year
             config["year"] = selected_year
         query = self.db.query(Question).filter(
             Question.subject_id == subject_id,
             or_(Question.source.is_(None), ~Question.source.like(f"{TEMP_ONLINE_SOURCE_PREFIX}%")),
+            # 考试需要评分，排除答案缺失的题目（题库浏览/练习仍可见）
+            Question.answer != PENDING_ANSWER_MARKER,
         )
         if selected_year:
             query = query.filter(Question.year == selected_year)
@@ -1275,6 +1288,33 @@ class ExamEngine:
             year = datetime.now().year
         return max(2000, min(2100, year))
 
+    def _best_answered_year(self, subject_id: int, requested_limit: int) -> Optional[int]:
+        """返回该科目答案可用题量最充足的年份。
+
+        最新年份的真题答案通常尚未公开，直接按当前年出卷会导致题量严重不足。
+        优先选取能满足题量要求的最新年份；都不满足时选可用题最多的年份。
+        """
+        rows = (
+            self.db.query(Question.year, func.count(Question.id))
+            .filter(
+                Question.subject_id == subject_id,
+                Question.year.isnot(None),
+                Question.answer != PENDING_ANSWER_MARKER,
+                or_(
+                    Question.source.is_(None),
+                    ~Question.source.like(f"{TEMP_ONLINE_SOURCE_PREFIX}%"),
+                ),
+            )
+            .group_by(Question.year)
+            .all()
+        )
+        if not rows:
+            return None
+        sufficient = [(year, count) for year, count in rows if count >= requested_limit]
+        if sufficient:
+            return max(year for year, _ in sufficient)
+        return max(rows, key=lambda row: row[1])[0]
+
     @staticmethod
     def _split_online_content(raw_content: str) -> tuple[str, str]:
         lines = [line.strip() for line in raw_content.splitlines() if line.strip()]
@@ -1369,16 +1409,22 @@ class ExamEngine:
         if not session:
             raise ValueError("Exam session not found.")
 
-        score_result = self.auto_score(session_id)
-        session.status = ExamStatus.COMPLETED.value
-        session.score = score_result["score"]
-        session.correct_count = score_result["correct_count"]
-        session.total_count = score_result["total_count"]
-        session.submitted_at = datetime.now()
-        self.db.commit()
+        try:
+            score_result = self.auto_score(session_id)
+            session.status = ExamStatus.COMPLETED.value
+            session.score = score_result["score"]
+            session.correct_count = score_result["correct_count"]
+            session.total_count = score_result["total_count"]
+            session.submitted_at = datetime.now()
 
-        self.archive_wrong_questions(session_id, session.user_id, score_result)
-        self.update_user_mastery(session.user_id, score_result)
+            self.archive_wrong_questions(session_id, session.user_id, score_result, _commit=False)
+            self.update_user_mastery(session.user_id, score_result, _commit=False)
+
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
         if self.redis:
             self.redis.delete(f"exam_session:{session_id}")
         return score_result
@@ -1472,6 +1518,7 @@ class ExamEngine:
         session_id: str,
         user_id: int,
         score_result: Optional[Dict[str, Any]] = None,
+        _commit: bool = True,
     ) -> bool:
         score_result = score_result or self.auto_score(session_id)
         analysis = score_result.get("question_analysis", [])
@@ -1517,10 +1564,11 @@ class ExamEngine:
                 existing_by_question[question_id].is_mastered = True
                 existing_by_question[question_id].user_answer = answers_by_id.get(question_id)
 
-        self.db.commit()
+        if _commit:
+            self.db.commit()
         return True
 
-    def update_user_mastery(self, user_id: int, score_result: Dict[str, Any]) -> bool:
+    def update_user_mastery(self, user_id: int, score_result: Dict[str, Any], _commit: bool = True) -> bool:
         analysis = [
             item
             for item in score_result.get("question_analysis", [])
@@ -1573,7 +1621,7 @@ class ExamEngine:
                 mastery.next_review_time = self._next_review_time(now, mastery.mastery_level, bool(item["is_correct"]))
                 changed = True
 
-        if changed:
+        if changed and _commit:
             self.db.commit()
         return changed
 
@@ -1816,17 +1864,52 @@ class ExamEngine:
         return f"{labels.get(mode, 'Exam')}{suffix}"
 
     @staticmethod
+    def _normalize_options(options: list) -> list:
+        """修复选项被合并的情况。
+
+        常见脏数据模式：
+          ['A选项 B. B选项 C. C选项', 'D选项 E. E选项']
+        其中每个数组元素开头隐含一个字母选项（A/C/E 等），数组内部用 B./C./D. 等分割。
+        本函数将它们拆分为独立选项。
+        """
+        import re
+        if not options:
+            return []
+        if len(options) > 6:
+            return options[:4]
+        if len(options) >= 3:
+            return options
+        # 只有 1-2 个选项：可能是合并了，尝试拆分
+        all_text = []
+        for opt in options:
+            s = str(opt).strip()
+            # 按 B./C./D./E./F. 分割当前元素
+            parts = re.split(r"\s+([B-F])[.、]\s*", s)
+            if len(parts) >= 3:
+                # parts = ['A文本', 'B', 'B文本', 'C', 'C文本', ...]
+                all_text.append(parts[0].strip())
+                for i in range(1, len(parts), 2):
+                    if i + 1 < len(parts) and parts[i + 1].strip():
+                        all_text.append(parts[i + 1].strip())
+            elif s:
+                all_text.append(s)
+        if len(all_text) >= 3:
+            return all_text[:6]
+        return options
+
+    @staticmethod
     def _serialize_exam_question(question: Question, include_answer: bool) -> Dict[str, Any]:
         data: Dict[str, Any] = {
             "id": question.id,
             "content": question.content,
             "question_type": question.question_type,
-            "options": question.options or [],
+            "options": ExamEngine._normalize_options(question.options or []),
             "score": question.score,
             "difficulty": question.difficulty,
             "year": question.year,
             "month": question.month,
             "chapter_id": question.chapter_id,
+            "answer_source": question.answer_source,
         }
         if include_answer:
             data["answer"] = question.answer
@@ -2222,6 +2305,19 @@ class ExamEngine:
 
     def _get_session(self, session_id: str) -> Optional[ExamSession]:
         return self.db.query(ExamSession).filter(ExamSession.session_id == session_id).first()
+
+    def cancel_exam(self, session_id: str) -> Dict[str, Any]:
+        """Cancel an in-progress exam session."""
+        session = self._get_session(session_id)
+        if not session:
+            raise ValueError("Exam session not found.")
+        if session.status == ExamStatus.COMPLETED.value:
+            raise ValueError("Cannot cancel a completed exam.")
+        session.status = "cancelled"
+        self.db.commit()
+        if self.redis:
+            self.redis.delete(f"exam_session:{session_id}")
+        return self._serialize_session(session)
 
     @staticmethod
     def _serialize_session(session: ExamSession) -> Dict[str, Any]:

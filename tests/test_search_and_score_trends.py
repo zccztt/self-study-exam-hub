@@ -13,6 +13,7 @@ from backend.models.question import Difficulty, Question, QuestionType
 from backend.models.subject import Subject
 from backend.services.analysis_service import AnalysisService
 from backend.services.exam_engine import ExamEngine
+from backend.services.online_question_provider import TEMP_ONLINE_SOURCE_PREFIX
 from backend.services.question_service import QuestionService
 
 
@@ -81,6 +82,23 @@ def test_question_search_uses_elasticsearch_ranked_ids() -> None:
         db.close()
 
 
+def test_question_favorites_return_saved_tags() -> None:
+    db = _session()
+    try:
+        _seed_subject(db)
+        _add_question(db, 1, "收藏题", 1)
+        db.commit()
+
+        service = QuestionService(db)
+        assert service.add_to_favorites(1, 1, ["重点", "二刷"]) is True
+        result = service.get_favorites(1)
+
+        assert result["items"][0]["id"] == 1
+        assert result["items"][0]["favorite_tags"] == ["重点", "二刷"]
+    finally:
+        db.close()
+
+
 def test_score_trends_include_subject_and_chapter_accuracy() -> None:
     db = _session()
     try:
@@ -132,6 +150,38 @@ def test_score_trends_include_subject_and_chapter_accuracy() -> None:
         chapters = {item["chapter_name"]: item for item in result["chapters"]}
         assert chapters["第一章"]["score_rate"] == 50
         assert chapters["第二章"]["score_rate"] == 100
+    finally:
+        db.close()
+
+
+def test_analysis_excludes_temporary_online_questions() -> None:
+    db = _session()
+    try:
+        _seed_subject(db)
+        _add_question(db, 1, "本地有效题目", 1)
+        db.add(
+            Question(
+                id=2,
+                subject_id=1,
+                chapter_id=1,
+                content="临时线上噪声词",
+                question_type=QuestionType.ESSAY.value,
+                difficulty=Difficulty.MEDIUM.value,
+                answer="A",
+                frequency=10,
+                score=2,
+                year=2026,
+                source=f"{TEMP_ONLINE_SOURCE_PREFIX}audit",
+            )
+        )
+        db.commit()
+
+        service = AnalysisService(db)
+        distribution = service.get_question_type_distribution(1)
+        word_cloud = service.get_word_cloud_data(1)
+        assert distribution["total"] == 1
+        assert distribution["items"][0]["question_type"] == QuestionType.SINGLE_CHOICE.value
+        assert all(item["word"] != "临时线上噪声词" for item in word_cloud)
     finally:
         db.close()
 

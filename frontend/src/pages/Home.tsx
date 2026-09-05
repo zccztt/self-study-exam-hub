@@ -1,13 +1,23 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { ContentOverview, subjectApi } from '../api/subject'
+import UpcomingExamWidget from '../components/UpcomingExamWidget'
+import StudyPlanWidget from '../components/StudyPlanWidget'
 
 const modules = [
+  {
+    to: '/enrollment',
+    title: '我的报考',
+    meta: '院校专业 · 科目跟踪 · 毕业进度',
+    description: '选择报考省份、院校和专业，系统自动列出全部考试科目，标记已过/未过状态，实时追踪毕业进度。',
+    tone: 'bg-indigo-50 text-indigo-700 border-indigo-100',
+  },
   {
     to: '/exam',
     title: '模拟考试',
     meta: '限时组卷 · 自动评分 · 错题归档',
     description: '按 2026 备考节奏生成随机卷、章节练习卷和错题重做卷，交卷后同步更新错题本与掌握度。',
-    tone: 'bg-blue-50 text-blue-700 border-blue-100',
+    tone: 'bg-brand-50 text-brand-700 border-brand-100',
   },
   {
     to: '/questions',
@@ -54,12 +64,18 @@ const officialLinks = [
 ]
 
 const Home: React.FC = () => {
+  const [overview, setOverview] = useState<ContentOverview | null>(null)
+
+  useEffect(() => {
+    void subjectApi.overview().then(setOverview).catch(() => setOverview(null))
+  }, [])
+
   return (
     <div className="space-y-6">
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
         <div className="grid gap-0 lg:grid-cols-[1.4fr_0.9fr]">
           <div className="p-6 sm:p-8">
-            <div className="mb-4 inline-flex rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
+            <div className="mb-4 inline-flex rounded-full border border-brand-100 bg-brand-50 px-3 py-1 text-sm font-medium text-brand-700">
               2026 自学考试备考工作台
             </div>
             <h1 className="max-w-3xl text-3xl font-bold leading-tight text-slate-950 sm:text-4xl">
@@ -70,10 +86,10 @@ const Home: React.FC = () => {
               登录后可直接体验题库检索、组卷提交、错题归档、薄弱点识别和复习计划更新。
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
-              <Link to="/planner" className="rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700">
+              <Link to="/planner" className="rounded-lg bg-brand-600 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 transition-colors active:scale-[0.97]">
                 生成学习计划
               </Link>
-              <Link to="/analysis" className="rounded-lg border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:border-blue-300 hover:text-blue-700">
+              <Link to="/analysis" className="rounded-lg border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:border-brand-300 hover:text-brand-700 transition-colors active:scale-[0.97]">
                 查看考点详情
               </Link>
               <Link to="/auth" className="rounded-lg border border-slate-300 bg-slate-50 px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-white">
@@ -91,8 +107,8 @@ const Home: React.FC = () => {
             </div>
             <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
               <div className="rounded-lg bg-white/10 p-3">
-                <div className="text-slate-300">重点课程</div>
-                <div className="mt-1 text-xl font-semibold">2 门</div>
+                <div className="text-slate-300">已有题课程</div>
+                <div className="mt-1 text-xl font-semibold">{overview?.subjects_with_questions ?? '-'} 门</div>
               </div>
               <div className="rounded-lg bg-white/10 p-3">
                 <div className="text-slate-300">备考年份</div>
@@ -103,12 +119,12 @@ const Home: React.FC = () => {
         </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-4 md:grid-cols-4">
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         {[
           ['考试窗口', '2026 年 4 月 / 10 月', '以各省教育考试院公告为准'],
-          ['公共课代码', '15044 / 15043', '马原与中国近现代史纲要'],
-          ['学习闭环', '题库 → 考试 → 错题 → 规划', '沉淀掌握度与薄弱点'],
-          ['数据接入', '导入脚本 + 公开资源', '支持线上补充检索'],
+          ['课程目录', overview ? `${overview.subject_count} 门` : '加载中', '有题课程优先展示'],
+          ['题库与试卷', overview ? `${overview.question_count} 题 / ${overview.exam_count} 卷` : '加载中', '答题后沉淀错题与掌握度'],
+          ['视频资源', overview ? `${overview.video_count} 个` : '加载中', '支持真实公开视频线上补充'],
         ].map(([label, value, desc]) => (
           <div key={label} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="text-sm text-slate-500">{label}</div>
@@ -116,6 +132,11 @@ const Home: React.FC = () => {
             <div className="mt-1 text-sm text-slate-500">{desc}</div>
           </div>
         ))}
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <UpcomingExamWidget />
+        <StudyPlanWidget />
       </section>
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -143,7 +164,7 @@ const Home: React.FC = () => {
               href={link.href}
               target="_blank"
               rel="noreferrer"
-              className="rounded-lg border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:border-blue-300 hover:text-blue-700"
+              className="rounded-lg border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:border-brand-300 hover:text-brand-700"
             >
               {link.label}
             </a>

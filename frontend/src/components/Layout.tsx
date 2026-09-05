@@ -1,54 +1,31 @@
-import React, { useEffect, useState } from 'react'
+import React from 'react'
 import { Link, NavLink } from 'react-router-dom'
-import { authApi, AuthUser } from '../api/auth'
-import { sessionStore } from '../api/session'
+import { useAuthStore } from '../stores/useAuthStore'
 
 interface LayoutProps {
   children: React.ReactNode
 }
 
 const navItems = [
+  { to: '/enrollment', label: '我的报考' },
+  { to: '/profile', label: '用户中心' },
   { to: '/exam', label: '模拟考试' },
+  { to: '/past-papers', label: '历年真题' },
   { to: '/questions', label: '题库搜索' },
   { to: '/videos', label: '资源中心' },
   { to: '/analysis', label: '考点分析' },
   { to: '/planner', label: '学习规划' },
+  { to: '/replacement-map', label: '课程替代' },
   { to: '/favorites', label: '收藏错题' },
 ]
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
-  const [user, setUser] = useState<AuthUser | null>(() => sessionStore.getUser())
+  const user = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
 
-  useEffect(() => {
-    const syncUser = () => setUser(sessionStore.getUser())
-    window.addEventListener('storage', syncUser)
-    window.addEventListener('focus', syncUser)
-    window.addEventListener(sessionStore.eventName, syncUser)
-    return () => {
-      window.removeEventListener('storage', syncUser)
-      window.removeEventListener('focus', syncUser)
-      window.removeEventListener(sessionStore.eventName, syncUser)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (user || !sessionStore.getToken()) return
-    const loadUser = async () => {
-      try {
-        const currentUser = await authApi.me()
-        sessionStore.saveUser(currentUser)
-        setUser(currentUser)
-      } catch {
-        sessionStore.clear()
-      }
-    }
-    void loadUser()
-  }, [user])
-
-  const logout = () => {
-    sessionStore.clear()
-    setUser(null)
-  }
+  const allNavItems = user?.is_superuser
+    ? [...navItems, { to: '/admin/providers', label: '⚙ 配置中心' }]
+    : navItems
 
   return (
     <div className="min-h-screen bg-[#f4f7fb] text-slate-900">
@@ -67,7 +44,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <div className="flex items-center gap-3">
               {user ? (
                 <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm text-slate-600">
-                  <span>{user.full_name || user.username}</span>
+                  <Link to="/profile" className="font-medium text-slate-700 hover:text-blue-600">
+                    {user.full_name || user.username}
+                  </Link>
                   <button type="button" onClick={logout} className="font-medium text-slate-950 hover:text-blue-600">
                     退出
                   </button>
@@ -80,7 +59,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </div>
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1">
-            {navItems.map((item) => (
+            {allNavItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

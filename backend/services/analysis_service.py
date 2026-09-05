@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.models.chapter import Chapter, KnowledgePoint, QuestionKnowledgePoint
+from backend.redis_client import redis_client
 from backend.models.exam import Exam, ExamSession, ExamStatus, WrongQuestion
 from backend.models.question import Question
 from backend.models.subject import Subject
@@ -65,7 +66,22 @@ class AnalysisService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _cached(self, key: str, ttl: int, builder):
+        cached = redis_client.get(key)
+        if cached is not None:
+            return cached
+        result = builder()
+        redis_client.set(key, result, expire=ttl)
+        return result
+
     def get_knowledge_tree(self, subject_id: int) -> Dict[str, Any]:
+        return self._cached(
+            f"analysis:knowledge_tree:{subject_id}",
+            600,
+            lambda: self._build_knowledge_tree(subject_id),
+        )
+
+    def _build_knowledge_tree(self, subject_id: int) -> Dict[str, Any]:
         chapters = (
             self.db.query(Chapter)
             .filter(Chapter.subject_id == subject_id)
@@ -111,6 +127,13 @@ class AnalysisService:
         }
 
     def get_high_frequency_points(self, subject_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        return self._cached(
+            f"analysis:high_frequency_points:{subject_id}:{limit}",
+            600,
+            lambda: self._build_high_frequency_points(subject_id, limit),
+        )
+
+    def _build_high_frequency_points(self, subject_id: int, limit: int = 20) -> List[Dict[str, Any]]:
         chapter_ids = [
             chapter_id
             for (chapter_id,) in self.db.query(Chapter.id).filter(Chapter.subject_id == subject_id).all()
@@ -196,6 +219,13 @@ class AnalysisService:
         }
 
     def get_knowledge_network(self, subject_id: int, limit: int = 30) -> Dict[str, Any]:
+        return self._cached(
+            f"analysis:knowledge_network:{subject_id}:{limit}",
+            600,
+            lambda: self._build_knowledge_network(subject_id, limit),
+        )
+
+    def _build_knowledge_network(self, subject_id: int, limit: int = 30) -> Dict[str, Any]:
         high_points = self.get_high_frequency_points(subject_id, limit=limit)
         top_ids = {int(point["id"]) for point in high_points}
         if not top_ids:
@@ -264,6 +294,13 @@ class AnalysisService:
         return {"subject_id": subject_id, "nodes": nodes, "edges": edges}
 
     def get_word_cloud_data(self, subject_id: int) -> List[Dict[str, Any]]:
+        return self._cached(
+            f"analysis:word_cloud_data:{subject_id}",
+            600,
+            lambda: self._build_word_cloud_data(subject_id),
+        )
+
+    def _build_word_cloud_data(self, subject_id: int) -> List[Dict[str, Any]]:
         chapter_ids = [
             chapter_id
             for (chapter_id,) in self.db.query(Chapter.id).filter(Chapter.subject_id == subject_id).all()
@@ -297,6 +334,13 @@ class AnalysisService:
         return [{"word": word, "weight": weight} for word, weight in tokens.most_common(30)]
 
     def get_chapter_heatmap(self, subject_id: int) -> Dict[str, Any]:
+        return self._cached(
+            f"analysis:chapter_heatmap:{subject_id}",
+            600,
+            lambda: self._build_chapter_heatmap(subject_id),
+        )
+
+    def _build_chapter_heatmap(self, subject_id: int) -> Dict[str, Any]:
         chapters = (
             self.db.query(Chapter)
             .filter(Chapter.subject_id == subject_id)
@@ -336,6 +380,13 @@ class AnalysisService:
         }
 
     def get_question_type_distribution(self, subject_id: int) -> Dict[str, Any]:
+        return self._cached(
+            f"analysis:question_type_distribution:{subject_id}",
+            600,
+            lambda: self._build_question_type_distribution(subject_id),
+        )
+
+    def _build_question_type_distribution(self, subject_id: int) -> Dict[str, Any]:
         rows = (
             self.db.query(Question.question_type, func.count(Question.id))
             .filter(Question.subject_id == subject_id)
@@ -376,6 +427,13 @@ class AnalysisService:
         }
 
     def predict_next_exam(self, subject_id: int) -> List[Dict[str, Any]]:
+        return self._cached(
+            f"analysis:predict_next_exam:{subject_id}",
+            300,
+            lambda: self._build_predict_next_exam(subject_id),
+        )
+
+    def _build_predict_next_exam(self, subject_id: int) -> List[Dict[str, Any]]:
         points = self.get_high_frequency_points(subject_id, limit=10)
         max_frequency = max([point["frequency"] for point in points] or [1])
         return [
@@ -388,6 +446,13 @@ class AnalysisService:
         ]
 
     def get_hotspot_alerts(self, subject_id: int) -> List[Dict[str, Any]]:
+        return self._cached(
+            f"analysis:hotspot_alerts:{subject_id}",
+            300,
+            lambda: self._build_hotspot_alerts(subject_id),
+        )
+
+    def _build_hotspot_alerts(self, subject_id: int) -> List[Dict[str, Any]]:
         predictions = self.predict_next_exam(subject_id)
         alerts: List[Dict[str, Any]] = []
         for point in predictions:

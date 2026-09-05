@@ -1,6 +1,10 @@
-import React, { FormEvent, useEffect, useState } from 'react'
+import React, { FormEvent, useEffect, useRef, useState } from 'react'
 import { questionApi, Question, QuestionSearchResult, SearchQuestionsParams } from '../api/question'
-import { Chapter, subjectApi, Subject } from '../api/subject'
+import { Chapter, subjectApi } from '../api/subject'
+import { listQuestionResources, ResourceSummary } from '../api/resource'
+import Pagination from '../components/ui/Pagination'
+import { useEnrolledSubjectFilter } from '../hooks/useEnrolledSubjectFilter'
+import EnrolledSubjectToggle from '../components/EnrolledSubjectToggle'
 
 const questionTypeLabels: Record<string, string> = {
   single_choice: '单选题',
@@ -23,7 +27,8 @@ const CURRENT_EXAM_YEAR = new Date().getFullYear()
 const YEAR_OPTIONS = Array.from({ length: 12 }, (_, index) => CURRENT_EXAM_YEAR - index)
 
 const QuestionsPage: React.FC = () => {
-  const [subjects, setSubjects] = useState<Subject[]>([])
+  const abortRef = useRef<AbortController | null>(null)
+  const { subjects, onlyEnrolled, setOnlyEnrolled, hasEnrollments, isLoggedIn } = useEnrolledSubjectFilter()
   const [keyword, setKeyword] = useState('')
   const [subjectQuery, setSubjectQuery] = useState('')
   const [subjectId, setSubjectId] = useState('')
@@ -37,12 +42,12 @@ const QuestionsPage: React.FC = () => {
   const [result, setResult] = useState<QuestionSearchResult | null>(null)
   const [details, setDetails] = useState<Record<number, Question>>({})
   const [favoriteStatus, setFavoriteStatus] = useState<Record<number, string>>({})
+  const [questionResources, setQuestionResources] = useState<Record<number, ResourceSummary[]>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
   const pageSize = 10
   const currentPage = result?.page || 1
-  const totalPages = Math.max(1, Math.ceil((result?.total || 0) / pageSize))
 
   const buildParams = (page: number): SearchQuestionsParams => {
     const trimmedSubjectQuery = subjectQuery.trim()
@@ -64,12 +69,15 @@ const QuestionsPage: React.FC = () => {
   }
 
   const loadQuestions = async (page = 1) => {
+    abortRef.current?.abort()
+    abortRef.current = new AbortController()
     setLoading(true)
     setError('')
     try {
-      const data = await questionApi.searchQuestions(buildParams(page))
+      const data = await questionApi.searchQuestions(buildParams(page), abortRef.current.signal)
       setResult(data)
     } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || err.message === 'canceled')) return
       setError(err instanceof Error ? err.message : '题目加载失败')
     } finally {
       setLoading(false)
@@ -79,11 +87,7 @@ const QuestionsPage: React.FC = () => {
   useEffect(() => {
     const initialize = async () => {
       try {
-        const [subjectData, questionData] = await Promise.all([
-          subjectApi.list(),
-          questionApi.searchQuestions({ years: [CURRENT_EXAM_YEAR], page: 1, page_size: pageSize }),
-        ])
-        setSubjects(subjectData)
+        const questionData = await questionApi.searchQuestions({ years: [CURRENT_EXAM_YEAR], page: 1, page_size: pageSize })
         setResult(questionData)
       } catch (err) {
         setError(err instanceof Error ? err.message : '初始化题库失败')
@@ -125,6 +129,13 @@ const QuestionsPage: React.FC = () => {
     try {
       const detail = await questionApi.getQuestionDetail(questionId)
       setDetails((current) => ({ ...current, [questionId]: detail }))
+      // 同时加载该题目的资源
+      try {
+        const resources = await listQuestionResources(questionId)
+        setQuestionResources((current) => ({ ...current, [questionId]: resources }))
+      } catch {
+        // 资源加载失败不影响展开详情
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '题目详情加载失败')
     }
@@ -175,6 +186,12 @@ const QuestionsPage: React.FC = () => {
             }}
             placeholder="课程代码或科目名称，如 15043 / 近现代史"
             className="px-4 py-2 border border-gray-300 rounded-lg"
+          />
+          <EnrolledSubjectToggle
+            onlyEnrolled={onlyEnrolled}
+            setOnlyEnrolled={setOnlyEnrolled}
+            hasEnrollments={hasEnrollments}
+            isLoggedIn={isLoggedIn}
           />
           <select
             value={subjectId}
@@ -262,9 +279,9 @@ const QuestionsPage: React.FC = () => {
       {error && <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-red-700">{error}</div>}
 
       <div className="mb-4 text-sm text-gray-600">
-        共 {result?.total || 0} 条结果，当前第 {currentPage} / {totalPages} 页
-        {typeof result?.local_count === 'number' && ` · 本地题库 ${result.local_count} 条`}
-        {typeof result?.online_count === 'number' && ` · 线上补充 ${result.online_count} 条`}
+        {typeof result?.local_count === 'number' && `本地题库 ${result.local_count} 条`}
+        {typeof result?.local_count === 'number' && typeof result?.online_count === 'number' && ' · '}
+        {typeof result?.online_count === 'number' && `线上补充 ${result.online_count} 条`}
       </div>
 
       <div className="space-y-4">
@@ -318,6 +335,35 @@ const QuestionsPage: React.FC = () => {
                       {detail.explanation && (
                         <div className="mt-2 text-gray-700 whitespace-pre-wrap">{detail.explanation}</div>
                       )}
+                    </div>
+                  )}
+
+                  {/* 资源附件 */}
+                  {detail && questionResources[question.id] && questionResources[question.id].length > 0 && (
+                    <div className="mt-4">
+                      <div className="text-sm font-medium text-gray-700 mb-2">相关资源</div>
+                      <div className="flex flex-wrap gap-2">
+                        {questionResources[question.id].map((res) => (
+                          <a
+                            key={res.id}
+                            href={res.storage_type === 'external_link' ? (res.external_url || '#') : (res.download_url || '#')}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg border border-gray-200 hover:bg-gray-50"
+                          >
+                            <span>
+                              {res.media_type === 'pdf' && '📄'}
+                              {res.media_type === 'image' && '🖼️'}
+                              {res.media_type === 'video' && '🎥'}
+                              {res.media_type === 'doc' && '📃'}
+                            </span>
+                            <span className="truncate max-w-[160px]">{res.filename}</span>
+                            {res.ocr_status === 'processing' && (
+                              <span className="text-yellow-500 text-[10px]">(解析中)</span>
+                            )}
+                          </a>
+                        ))}
+                      </div>
                     </div>
                   )}
                   {question.source && (
@@ -380,27 +426,14 @@ const QuestionsPage: React.FC = () => {
         <div className="bg-white rounded-lg shadow p-8 text-center text-gray-500">没有找到匹配题目</div>
       )}
 
-      <div className="mt-8 flex justify-center gap-2">
-        <button
-          type="button"
-          className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={currentPage <= 1 || loading}
-          onClick={() => void loadQuestions(currentPage - 1)}
-        >
-          上一页
-        </button>
-        <button className="px-4 py-2 bg-blue-500 text-white rounded" type="button">
-          {currentPage}
-        </button>
-        <button
-          type="button"
-          className="px-4 py-2 border border-gray-300 rounded hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={currentPage >= totalPages || loading}
-          onClick={() => void loadQuestions(currentPage + 1)}
-        >
-          下一页
-        </button>
-      </div>
+      <Pagination
+        current={currentPage}
+        total={result?.total || 0}
+        pageSize={pageSize}
+        loading={loading}
+        onChange={(page) => void loadQuestions(page)}
+        className="mt-8"
+      />
     </div>
   )
 }

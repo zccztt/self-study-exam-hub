@@ -3,7 +3,7 @@
 
 import enum
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from backend.models import Base
@@ -44,12 +44,17 @@ class Exam(Base):
 
 class ExamSession(Base):
     __tablename__ = "exam_sessions"
+    __table_args__ = (
+        Index("ix_exam_sessions_user_status", "user_id", "status"),
+        {},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String(100), unique=True, nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     exam_id = Column(Integer, ForeignKey("exams.id"), nullable=False, index=True)
     status = Column(String(32), default=ExamStatus.IN_PROGRESS.value, nullable=False, index=True)
+    ai_grading_status = Column(String(32))  # pending / completed / confirmed / user_modified
     answers = Column(JSON, default=dict)
     score = Column(Integer)
     correct_count = Column(Integer)
@@ -66,6 +71,11 @@ class ExamSession(Base):
 
 class WrongQuestion(Base):
     __tablename__ = "wrong_questions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "question_id", name="uq_wrong_questions_user_question"),
+        Index("ix_wrong_questions_user_mastered_time", "user_id", "is_mastered", "last_wrong_at"),
+        {},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
@@ -82,3 +92,16 @@ class WrongQuestion(Base):
 
     def __repr__(self) -> str:
         return f"<WrongQuestion U{self.user_id}-Q{self.question_id}>"
+
+
+class ExamResult(Base):
+    __tablename__ = "exam_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(100), unique=True, nullable=False, index=True)
+    result = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    def __repr__(self) -> str:
+        return f"<ExamResult session={self.session_id}>"

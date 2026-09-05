@@ -117,6 +117,7 @@ npm run build
 - `DEBUG=false`。
 - `FRONTEND_URL` 是线上前端域名。
 - 数据库、Redis、MinIO 密码已替换。
-- 后端 HTTPS 可访问 `/api/v1/health`。
+- 后端 HTTPS 可访问 `/api/v1/health`，且 `/api/v1/health/ready` 返回数据库就绪。
+- 已配置 SMTP，并实际验证找回密码邮件可送达。
 - 前端构建时 `VITE_API_BASE_URL` 指向线上后端。
 - 数据库已初始化：`python backend/init_db.py`。

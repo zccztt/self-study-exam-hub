@@ -56,6 +56,8 @@ dist-ssr/
 *.db
 *.sqlite
 *.sqlite3
+backups/
+*.dump
 
 # Logs
 logs/
@@ -74,6 +76,9 @@ docker-compose.override.yml
 # MinIO data
 minio_data/
 
+# User uploads
+uploads/
+
 # Elasticsearch data
 es_data/
 
@@ -82,3 +87,15 @@ postgres_data/
 
 # Redis data
 redis_data/
+.ace-tool/
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Temporary test/probe data
+data/test_enroll*.json
+data/channel_probe.jsonl
+
+# Development notes (not user-facing docs)
+AI_CONFIG_GUIDE.md
+AI_IMPLEMENTATION_SUMMARY.md

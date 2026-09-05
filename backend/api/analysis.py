@@ -5,9 +5,20 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
+from backend.api.dependencies import get_current_user, require_self
+from backend.models.user import User
 from backend.services.analysis_service import AnalysisService
+from backend.config import settings
+from backend.utils.rate_limit import rate_limiter
+from backend.services.ai_provider_pool import ai_provider_pool
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
+
+
+@router.get("/ai-providers/status")
+async def get_ai_provider_status(current_user: User = Depends(get_current_user)):
+    """Return non-secret provider pool and health information."""
+    return {"code": 0, "data": ai_provider_pool.public_status()}
 
 
 @router.get("/knowledge-tree/{subject_id}")
@@ -74,5 +85,61 @@ async def get_score_trends(
     subject_id: int | None = Query(default=None, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    require_self(user_id, current_user)
     return {"code": 0, "data": AnalysisService(db).get_score_trends(user_id, subject_id, limit)}
+
+
+@router.get("/ai-hotspots/{subject_id}")
+def ai_analyze_hotspots(
+    subject_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI 智能分析高频考点，生成备考建议和考点预测。
+
+    从本地配置文件读取 AI API 配置，未配置时回退到纯统计分析。
+    """
+    rate_limiter.check("ai_analysis", f"user:{current_user.id}", settings.AI_RATE_LIMIT_PER_MINUTE)
+    return {"code": 0, "data": AnalysisService(db).ai_analyze_hotspots(subject_id)}
+
+
+@router.get("/templates")
+async def get_answer_templates():
+    """获取所有答题模板"""
+    from backend.services.answer_template_service import AnswerTemplateService
+    service = AnswerTemplateService()
+    return {"code": 0, "data": service.get_all_templates()}
+
+
+@router.get("/templates/{question_type}")
+async def get_template_by_type(
+    question_type: str,
+    category: str = Query(default="default"),
+):
+    """获取某题型的答题模板"""
+    from backend.services.answer_template_service import AnswerTemplateService
+    service = AnswerTemplateService()
+    template = service.get_template(question_type, category)
+    if not template:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="模板不存在")
+    return {"code": 0, "data": template}
+
+
+@router.get("/sprint-report/{user_id}/{subject_id}")
+async def get_sprint_report(
+    user_id: int,
+    subject_id: int,
+    exam_date: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """生成考前冲刺报告"""
+    require_self(user_id, current_user)
+    from datetime import datetime
+    from backend.services.sprint_report_service import SprintReportService
+    service = SprintReportService(db)
+    exam_dt = datetime.fromisoformat(exam_date) if exam_date else None
+    return {"code": 0, "data": service.generate_report(user_id, subject_id, exam_dt)}

@@ -6,13 +6,19 @@ services:
     image: postgres:13
     container_name: exam-hub-postgres
     environment:
-      POSTGRES_DB: exam_hub
-      POSTGRES_USER: exam_user
-      POSTGRES_PASSWORD: exam_password
+      POSTGRES_DB: ${POSTGRES_DB:-exam_hub}
+      POSTGRES_USER: ${POSTGRES_USER:-exam_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Please set POSTGRES_PASSWORD in .env}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U exam_user -d exam_hub"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
     networks:
       - exam-hub-network
 
@@ -20,10 +26,17 @@ services:
   redis:
     image: redis:6
     container_name: exam-hub-redis
+    command: redis-server ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
     networks:
       - exam-hub-network
 
@@ -40,6 +53,12 @@ services:
       - "9300:9300"
     volumes:
       - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
     networks:
       - exam-hub-network
 
@@ -49,13 +68,14 @@ services:
     container_name: exam-hub-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - "9000:9000"
       - "9001:9001"
     volumes:
       - minio_data:/data
+    restart: unless-stopped
     networks:
       - exam-hub-network
 
@@ -66,19 +86,33 @@ services:
       dockerfile: backend/Dockerfile
     container_name: exam-hub-backend
     environment:
-      DATABASE_URL: postgresql://exam_user:exam_password@postgres:5432/exam_hub
-      REDIS_URL: redis://redis:6379/0
+      APP_ENV: production
+      DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-exam_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-exam_hub}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
       ELASTICSEARCH_URL: http://elasticsearch:9200
       MINIO_ENDPOINT: minio:9000
     ports:
       - "8000:8000"
     depends_on:
-      - postgres
-      - redis
-      - elasticsearch
-      - minio
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      minio:
+        condition: service_started
     volumes:
-      - .:/app
+      - ./backend:/app/backend
+      - ./scripts:/app/scripts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
     networks:
       - exam-hub-network
 
@@ -88,13 +122,17 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: exam-hub-frontend
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
     ports:
       - "3000:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     volumes:
       - ./frontend:/app
       - /app/node_modules
+    restart: unless-stopped
     networks:
       - exam-hub-network
 

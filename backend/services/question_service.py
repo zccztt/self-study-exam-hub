@@ -3,7 +3,7 @@
 
 from datetime import datetime
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
@@ -12,7 +12,7 @@ from backend.data.self_exam_catalog import normalize_course_code
 from backend.elasticsearch_client import ElasticsearchClient
 from backend.models.chapter import KnowledgePoint, QuestionKnowledgePoint
 from backend.models.favorite import QuestionFavorite
-from backend.models.question import Question
+from backend.models.question import AnswerSource, Question
 from backend.models.subject import Subject
 from backend.services.online_question_provider import OnlineQuestionProvider, TEMP_ONLINE_SOURCE_PREFIX
 
@@ -44,6 +44,7 @@ class QuestionService:
         online_search: bool = True,
         page: int = 1,
         page_size: int = 20,
+        user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         query = self.db.query(Question).filter(
             or_(Question.source.is_(None), ~Question.source.like(f"{TEMP_ONLINE_SOURCE_PREFIX}%"))
@@ -99,8 +100,12 @@ class QuestionService:
                 .all()
             )
         subject_lookup = self._build_subject_lookup(questions)
+        favorited_ids = self._batch_get_favorited_ids(
+            [question.id for question in questions], user_id
+        )
         local_items = [
-            self._serialize_question(question, include_answer=False, subject_lookup=subject_lookup)
+            {**self._serialize_question(question, include_answer=False, subject_lookup=subject_lookup),
+             "is_favorited": question.id in favorited_ids}
             for question in questions
         ]
 
@@ -126,7 +131,7 @@ class QuestionService:
             "search_engine": search_engine,
         }
 
-    def get_question_detail(self, question_id: int) -> Optional[Dict[str, Any]]:
+    def get_question_detail(self, question_id: int, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         question = self.db.query(Question).filter(Question.id == question_id).first()
         if not question:
             return None
@@ -137,6 +142,8 @@ class QuestionService:
             subject_lookup=self._build_subject_lookup([question]),
         )
         data["knowledge_points"] = self._get_question_points(question.id)
+        favorited_ids = self._batch_get_favorited_ids([question.id], user_id)
+        data["is_favorited"] = question.id in favorited_ids
         return data
 
     def add_to_favorites(self, user_id: int, question_id: int, tags: Optional[List[str]] = None) -> bool:
@@ -199,7 +206,10 @@ class QuestionService:
             "total": total,
             "page": page,
             "page_size": page_size,
-            "items": [self._serialize_question(question, include_answer=False) for question in questions],
+            "items": [
+                {**self._serialize_question(question, include_answer=False), "is_favorited": True}
+                for question in questions
+            ],
         }
 
     def get_high_frequency_questions(self, subject_id: int, limit: int = 50) -> List[Dict[str, Any]]:
@@ -274,6 +284,27 @@ class QuestionService:
         subjects = self.db.query(Subject).filter(Subject.id.in_(subject_ids)).all()
         return {subject.id: subject for subject in subjects}
 
+    def _batch_get_favorited_ids(
+        self, question_ids: List[int], user_id: Optional[int]
+    ) -> Set[int]:
+        """Return the set of question IDs that the user has favorited.
+
+        Performs a single IN-query instead of one query per question.
+        """
+        if not user_id or not question_ids:
+            return set()
+        rows = (
+            self.db.query(QuestionFavorite.question_id)
+            .filter(
+                and_(
+                    QuestionFavorite.user_id == user_id,
+                    QuestionFavorite.question_id.in_(question_ids),
+                )
+            )
+            .all()
+        )
+        return {row[0] for row in rows}
+
     def _search_question_ids_with_elasticsearch(self, keyword: Optional[str], max_results: int = 500) -> List[int]:
         keyword_text = str(keyword or "").strip()
         if not keyword_text or not self.es:
@@ -331,6 +362,30 @@ class QuestionService:
         )
 
     @staticmethod
+    def _normalize_options(options: list) -> list:
+        """修复选项被合并的情况。"""
+        if not options:
+            return []
+        if len(options) > 6:
+            return options[:4]
+        if len(options) >= 3:
+            return options
+        all_text = []
+        for opt in options:
+            s = str(opt).strip()
+            parts = re.split(r"\s+([B-F])[.、]\s*", s)
+            if len(parts) >= 3:
+                all_text.append(parts[0].strip())
+                for i in range(1, len(parts), 2):
+                    if i + 1 < len(parts) and parts[i + 1].strip():
+                        all_text.append(parts[i + 1].strip())
+            elif s:
+                all_text.append(s)
+        if len(all_text) >= 3:
+            return all_text[:6]
+        return options
+
+    @staticmethod
     def _serialize_question(
         question: Question,
         include_answer: bool,
@@ -341,7 +396,7 @@ class QuestionService:
             "id": question.id,
             "content": question.content,
             "question_type": question.question_type,
-            "options": question.options or [],
+            "options": QuestionService._normalize_options(question.options or []),
             "difficulty": question.difficulty,
             "year": question.year,
             "month": question.month,
@@ -352,6 +407,8 @@ class QuestionService:
             "chapter_id": question.chapter_id,
             "score": question.score,
             "source": question.source,
+            "answer_source": question.answer_source,
+            "has_verified_answer": question.answer_source != AnswerSource.PENDING.value,
             "is_online": False,
         }
         if include_answer:

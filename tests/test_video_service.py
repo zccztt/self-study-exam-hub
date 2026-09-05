@@ -5,8 +5,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.models import Base
+from backend.models.chapter import Chapter, KnowledgePoint
 from backend.models.subject import Subject
-from backend.models.video import Video, VideoSource
+from backend.models.video import Video, VideoKnowledgePoint, VideoSource
 from backend.services.video_service import VideoService
 
 
@@ -72,6 +73,54 @@ def test_save_online_video_preserves_platform_source() -> None:
         assert saved is True
         assert video.source == VideoSource.YOUTUBE.value
         assert "YouTube" in (video.tags or [])
+    finally:
+        db.close()
+
+
+def test_video_favorite_returns_saved_note() -> None:
+    db = _build_db_session()
+    try:
+        video = Video(
+            title="复习视频",
+            url="https://www.bilibili.com/video/BV1example",
+            source=VideoSource.BILIBILI.value,
+            subject_id=1,
+            is_active=True,
+        )
+        db.add(video)
+        db.commit()
+
+        service = VideoService(db)
+        assert service.add_to_favorites(1, video.id, "第二章考前复习") is True
+        result = service.get_favorites(1)
+        assert result["items"][0]["favorite_note"] == "第二章考前复习"
+    finally:
+        db.close()
+
+
+def test_video_detail_returns_related_knowledge_points() -> None:
+    db = _build_db_session()
+    try:
+        chapter = Chapter(id=1, subject_id=1, name="第一章", order=1)
+        point = KnowledgePoint(id=1, chapter_id=1, name="实践与认识", frequency=4)
+        video = Video(
+            title="考点视频",
+            url="https://www.bilibili.com/video/BV1example2",
+            source=VideoSource.BILIBILI.value,
+            subject_id=1,
+            chapter_id=1,
+            is_active=True,
+        )
+        db.add_all([chapter, point, video])
+        db.commit()
+        db.add(VideoKnowledgePoint(video_id=video.id, knowledge_point_id=point.id))
+        db.commit()
+
+        detail = VideoService(db).get_video_detail(video.id)
+
+        assert detail is not None
+        assert detail["knowledge_points"][0]["name"] == "实践与认识"
+        assert detail["knowledge_points"][0]["chapter_name"] == "第一章"
     finally:
         db.close()
 

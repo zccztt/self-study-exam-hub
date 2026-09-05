@@ -18,6 +18,9 @@ export interface Question {
   source?: string
   source_url?: string
   is_online?: boolean
+  is_favorited?: boolean
+  favorite_tags?: string[]
+  favorite_note?: string
   answer?: string
   explanation?: string
 }
@@ -55,11 +58,11 @@ const serializeParams = (params: SearchQuestionsParams) => ({
 })
 
 export const questionApi = {
-  searchQuestions: (params: SearchQuestionsParams) =>
-    unwrap<QuestionSearchResult>(apiClient.get('/questions/search', { params: serializeParams(params) })),
+  searchQuestions: (params: SearchQuestionsParams, signal?: AbortSignal) =>
+    unwrap<QuestionSearchResult>(apiClient.get('/questions/search', { params: serializeParams(params), signal })),
   getQuestionDetail: (questionId: number) => unwrap<Question>(apiClient.get(`/questions/${questionId}`)),
-  addToFavorites: (questionId: number, tags?: string[], userId = sessionStore.getUserId()) =>
-    unwrap<{ success: boolean }>(apiClient.post('/questions/favorites', { user_id: userId, question_id: questionId, tags })),
+  addToFavorites: (questionId: number, tags?: string[]) =>
+    unwrap<{ success: boolean }>(apiClient.post('/questions/favorites', { question_id: questionId, tags })),
   removeFromFavorites: (questionId: number, userId = sessionStore.getUserId()) =>
     unwrap<{ success: boolean }>(apiClient.delete(`/questions/favorites/${userId}/${questionId}`)),
   getFavorites: (userId = sessionStore.getUserId(), page = 1, pageSize = 20) =>

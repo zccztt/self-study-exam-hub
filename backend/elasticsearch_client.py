@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """Elasticsearch wrapper used as an optional accelerator."""
 
+import logging
 from typing import Dict, List
 
 from elasticsearch import Elasticsearch
 
 from backend.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 QUESTION_INDEX = "questions"
@@ -32,6 +35,18 @@ QUESTION_INDEX_MAPPING = {
 class ElasticsearchClient:
     def __init__(self) -> None:
         self.client = Elasticsearch([settings.ELASTICSEARCH_URL])
+        self._available: bool = self._check_connection()
+
+    @property
+    def is_available(self) -> bool:
+        return self._available
+
+    def _check_connection(self) -> bool:
+        try:
+            return self.client.ping()
+        except Exception as e:
+            logger.warning("Elasticsearch ping failed: %s", e)
+            return False
 
     def create_index(self, index_name: str, mappings: Dict) -> bool:
         try:
@@ -63,6 +78,9 @@ class ElasticsearchClient:
             return False
 
     def search_questions(self, keyword: str, page: int = 1, page_size: int = 20) -> Dict:
+        if not self._available:
+            logger.warning("Elasticsearch unavailable, skipping search for '%s'", keyword)
+            return {"hits": {"total": {"value": 0}, "hits": []}}
         query = {
             "query": {
                 "multi_match": {

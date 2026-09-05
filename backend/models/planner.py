@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Study plan models."""
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from backend.models import Base
@@ -16,6 +16,7 @@ class StudyPlan(Base):
     daily_hours = Column(Float, nullable=False)
     subjects = Column(JSON, nullable=False)
     preferences = Column(JSON)
+    user_context = Column(Text, nullable=True)
     plan_data = Column(JSON)
     status = Column(String(20), default="active", nullable=False, index=True)
     completion_rate = Column(Float, default=0.0, nullable=False)
@@ -29,6 +30,11 @@ class StudyPlan(Base):
 
 class DailyTask(Base):
     __tablename__ = "daily_tasks"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "task_date", "subject_id", name="uq_daily_tasks_plan_date_subject"),
+        Index("ix_daily_tasks_user_date", "user_id", "task_date"),
+        {},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     plan_id = Column(Integer, ForeignKey("study_plans.id"), nullable=False, index=True)
@@ -51,6 +57,11 @@ class DailyTask(Base):
 
 class UserMastery(Base):
     __tablename__ = "user_mastery"
+    __table_args__ = (
+        Index("ix_user_mastery_user_point", "user_id", "knowledge_point_id"),
+        Index("ix_user_mastery_user_level", "user_id", "mastery_level"),
+        {},
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)

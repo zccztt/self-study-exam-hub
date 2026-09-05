@@ -31,9 +31,22 @@ python-dotenv>=1.0,<2.0
 httpx>=0.27,<1.0
 aiohttp>=3.10,<4.0
 
+# Web Scraping
+beautifulsoup4>=4.12,<5.0
+playwright>=1.40,<2.0
+
+# Search Engine API
+tavily-python>=0.5,<1.0
+
 # Data Processing
 pandas>=2.2.3,<3.0
 numpy>=2.1,<3.0
+
+# PDF Parsing & OCR
+pypdf>=4.0,<5.0
+pillow>=10.0,<12.0
+pytesseract>=0.3.10,<1.0
+pdf2image>=1.16,<2.0
 
 # AI Integration
 openai>=1.40,<2.0
